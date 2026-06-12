@@ -14,7 +14,7 @@ import {
   CodeGraphConfig,
 } from '../types';
 import { QueryBuilder } from '../db/queries';
-import { extractFromSource } from './tree-sitter';
+import { extractFromSource } from './extract-from-source';
 import { detectLanguage, isLanguageSupported, initGrammars, loadGrammarsForLanguages } from './grammars';
 import { logWarn } from '../errors';
 import { validatePathWithinRoot } from '../utils';
@@ -482,8 +482,11 @@ export class ExtractionOrchestrator {
               logWarn('Path traversal blocked in batch reader', { filePath: fp });
               return { filePath: fp, content: null as string | null, stats: null as fs.Stats | null, error: new Error('Path traversal blocked') };
             }
-            const content = await fsp.readFile(fullPath, 'utf-8');
             const stats = await fsp.stat(fullPath);
+            if (stats.size > this.config.maxFileSize) {
+              return { filePath: fp, content: '', stats, error: null as Error | null };
+            }
+            const content = await fsp.readFile(fullPath, 'utf-8');
             return { filePath: fp, content, stats, error: null as Error | null };
           } catch (err) {
             return { filePath: fp, content: null as string | null, stats: null as fs.Stats | null, error: err as Error };
@@ -801,6 +804,9 @@ export class ExtractionOrchestrator {
     let stats: fs.Stats;
     try {
       stats = await fsp.stat(fullPath);
+      if (stats.size > this.config.maxFileSize) {
+        return this.indexFileWithContent(relativePath, '', stats);
+      }
       content = await fsp.readFile(fullPath, 'utf-8');
     } catch (error) {
       return {
@@ -933,5 +939,5 @@ export class ExtractionOrchestrator {
 
 // Re-export useful types and functions
 export { hashContent, scanDirectory, scanDirectoryAsync, shouldIncludeFile } from './file-scanner';
-export { extractFromSource } from './tree-sitter';
+export { extractFromSource } from './extract-from-source';
 export { detectLanguage, isLanguageSupported, isGrammarLoaded, getSupportedLanguages, initGrammars, loadGrammarsForLanguages, loadAllGrammars } from './grammars';
