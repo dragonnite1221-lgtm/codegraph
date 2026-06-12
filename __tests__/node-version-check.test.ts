@@ -7,7 +7,14 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { createRequire } from 'node:module';
 import { buildUnsupportedNodeBlockBanner } from '../src/bin/node-version-check';
+
+const require = createRequire(import.meta.url);
+const {
+  buildUnsupportedNodeBlockBanner: buildUnsupportedTestNodeBlockBanner,
+}: { buildUnsupportedNodeBlockBanner: (nodeVersion: string, commandName?: string) => string } =
+  require('../scripts/node-version-banner.cjs');
 
 describe('buildUnsupportedNodeBlockBanner', () => {
   it('embeds the reported Node version in the header', () => {
@@ -38,6 +45,25 @@ describe('buildUnsupportedNodeBlockBanner', () => {
   it('links to issue #81 for the root-cause writeup', () => {
     expect(buildUnsupportedNodeBlockBanner('24.16.0')).toContain(
       'github.com/colbymchenry/codegraph/issues/81'
+    );
+  });
+});
+
+describe('buildUnsupportedTestNodeBlockBanner', () => {
+  it('keeps the npm test preflight actionable on Node 24+', () => {
+    const banner = buildUnsupportedTestNodeBlockBanner('24.16.0');
+
+    expect(banner).toContain('Unsupported Node.js version for tests: 24.16.0');
+    expect(banner).toContain('Fatal process out of memory: Zone');
+    expect(banner).toContain('Node.js 22 LTS');
+    expect(banner).toContain('nvm install 22');
+    expect(banner).toContain('CODEGRAPH_ALLOW_UNSAFE_NODE=1 npm test');
+    expect(banner).toContain('github.com/colbymchenry/codegraph/issues/81');
+  });
+
+  it('can name a narrower diagnostic command in the override recipe', () => {
+    expect(buildUnsupportedTestNodeBlockBanner('24.16.0', 'vitest run foo.test.ts')).toContain(
+      'CODEGRAPH_ALLOW_UNSAFE_NODE=1 vitest run foo.test.ts'
     );
   });
 });
