@@ -16,7 +16,9 @@ import {
   WASM_FALLBACK_FIX_RECIPE,
 } from '../src/db/sqlite-adapter';
 import { DatabaseConnection } from '../src/db';
+import { QueryBuilder } from '../src/db/queries';
 import { CodeGraph } from '../src';
+import type { FileRecord } from '../src/types';
 
 describe('buildWasmFallbackBanner — fix-recipe content', () => {
   it('includes the macOS / Linux / cross-platform fix commands', () => {
@@ -132,6 +134,67 @@ describe('DatabaseConnection — per-instance backend reporting', () => {
       expect(['native', 'wasm']).toContain(cg.getBackend());
     } finally {
       cg.destroy();
+    }
+  });
+});
+
+describe('QueryBuilder file queries', () => {
+  let dir: string;
+
+  function fileRecord(filePath: string): FileRecord {
+    return {
+      path: filePath,
+      contentHash: `hash:${filePath}`,
+      language: filePath.endsWith('.ts') ? 'typescript' : 'unknown',
+      size: 10,
+      modifiedAt: 1,
+      indexedAt: 2,
+      nodeCount: 0,
+    };
+  }
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-file-query-'));
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(dir)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('normalizes dot prefixes and escapes LIKE wildcards', () => {
+    const dbPath = path.join(dir, 'test.db');
+    const conn = DatabaseConnection.initialize(dbPath);
+    const queries = new QueryBuilder(conn.getDb());
+
+    queries.upsertFile(fileRecord('src/foo%literal.ts'));
+    queries.upsertFile(fileRecord('src/foo_extra.ts'));
+    queries.upsertFile(fileRecord('src/foo/literal.ts'));
+
+    try {
+      expect(queries.getAllFiles({ pathPrefix: './src/foo%' }).map(file => file.path)).toEqual([
+        'src/foo%literal.ts',
+      ]);
+      expect(queries.countFiles({ pathPrefix: './src/foo%' })).toBe(1);
+    } finally {
+      conn.close();
+    }
+  });
+
+  it('keeps unfiltered file reads ordered and applies positive limits', () => {
+    const dbPath = path.join(dir, 'test.db');
+    const conn = DatabaseConnection.initialize(dbPath);
+    const queries = new QueryBuilder(conn.getDb());
+
+    queries.upsertFile(fileRecord('src/b.ts'));
+    queries.upsertFile(fileRecord('src/a.ts'));
+
+    try {
+      expect(queries.getAllFiles().map(file => file.path)).toEqual(['src/a.ts', 'src/b.ts']);
+      expect(queries.getAllFiles({ limit: 1 }).map(file => file.path)).toEqual(['src/a.ts']);
+    } finally {
+      conn.close();
     }
   });
 });
