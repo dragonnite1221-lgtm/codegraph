@@ -11,7 +11,6 @@ import { writeFileSync } from 'fs';
 import { clamp } from '../utils';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
-import { WASM_FALLBACK_FIX_RECIPE } from '../db';
 import { buildExploreOutput, getExploreBudget } from './explore-output';
 import { filterMcpFiles, formatMcpFiles } from './files-output';
 import {
@@ -27,6 +26,7 @@ import {
   type SymbolMatch,
   type SymbolMatches,
 } from './symbol-resolution';
+import { buildMcpStatusOutput } from './status-output';
 import { tools } from './tool-definitions';
 import type { ToolDefinition, ToolResult } from './tool-types';
 
@@ -37,6 +37,31 @@ export type { ExploreOutputBudget } from './explore-output';
 
 /** Maximum output length to prevent context bloat (characters) */
 const MAX_OUTPUT_LENGTH = 15000;
+const MAX_PROJECT_CACHE_SIZE = 32;
+
+function boundedNumber(value: unknown, fallback: number, min: number, max: number): number {
+  if (value == null || value === '') {
+    return fallback;
+  }
+  if (typeof value !== 'number' && typeof value !== 'string') {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? clamp(parsed, min, max) : fallback;
+}
+
+function optionalBoundedNumber(value: unknown, min: number, max: number): number | undefined {
+  if (value == null || value === '') {
+    return undefined;
+  }
+  if (typeof value !== 'number' && typeof value !== 'string') {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? clamp(parsed, min, max) : undefined;
+}
 
 /**
  * Mark a Claude session as having consulted MCP tools.
@@ -46,7 +71,11 @@ function markSessionConsulted(sessionId: string): void {
   try {
     const hash = createHash('md5').update(sessionId).digest('hex').slice(0, 16);
     const markerPath = join(tmpdir(), `codegraph-consulted-${hash}`);
-    writeFileSync(markerPath, new Date().toISOString(), 'utf8');
+    writeFileSync(markerPath, new Date().toISOString(), {
+      encoding: 'utf8',
+      flag: 'wx',
+      mode: 0o600,
+    });
   } catch {
     // Silently fail - don't break MCP on marker write failure
   }
@@ -59,7 +88,8 @@ function markSessionConsulted(sessionId: string): void {
  * Other projects are opened on-demand and cached for performance.
  */
 export class ToolHandler {
-  // Cache of opened CodeGraph instances for cross-project queries
+  // Cache of opened CodeGraph instances for cross-project queries, keyed by
+  // resolved project root to avoid duplicate SQLite handles for path aliases.
   private projectCache: Map<string, CodeGraph> = new Map();
 
   constructor(private cg: CodeGraph | null) {}
@@ -123,12 +153,6 @@ export class ToolHandler {
 
     const requestedPath = resolve(projectPath);
 
-    // Check cache first using a normalized caller path, so relative aliases
-    // don't open duplicate SQLite handles for the same project.
-    if (this.projectCache.has(requestedPath)) {
-      return this.projectCache.get(requestedPath)!;
-    }
-
     // Walk up parent directories to find nearest .codegraph/
     const resolvedRoot = findNearestCodeGraphRoot(requestedPath);
 
@@ -136,21 +160,24 @@ export class ToolHandler {
       throw new Error(`CodeGraph not initialized in ${projectPath}. Run 'codegraph init' in that project first.`);
     }
 
-    // Check if we already have this resolved root cached (different path, same project)
     if (this.projectCache.has(resolvedRoot)) {
-      const cg = this.projectCache.get(resolvedRoot)!;
-      // Cache under original path too for faster future lookups
-      this.projectCache.set(requestedPath, cg);
-      return cg;
+      return this.projectCache.get(resolvedRoot)!;
     }
 
-    // Open and cache under both paths
     const cg = CodeGraph.openSync(resolvedRoot);
     this.projectCache.set(resolvedRoot, cg);
-    if (requestedPath !== resolvedRoot) {
-      this.projectCache.set(requestedPath, cg);
-    }
+    this.evictOldestCachedProjects();
     return cg;
+  }
+
+  private evictOldestCachedProjects(): void {
+    while (this.projectCache.size > MAX_PROJECT_CACHE_SIZE) {
+      const oldest = this.projectCache.entries().next().value;
+      if (!oldest) return;
+      const [projectRoot, cg] = oldest;
+      this.projectCache.delete(projectRoot);
+      cg.close();
+    }
   }
 
   /**
@@ -244,7 +271,7 @@ export class ToolHandler {
     }
 
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
-    const maxNodes = (args.maxNodes as number) || 20;
+    const maxNodes = boundedNumber(args.maxNodes, 20, 1, 100);
     const includeCode = args.includeCode !== false;
 
     const context = await cg.buildContext(task, {
@@ -304,7 +331,7 @@ export class ToolHandler {
     if (typeof symbol !== 'string') return symbol;
 
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
-    const limit = clamp((args.limit as number) || 20, 1, 100);
+    const limit = boundedNumber(args.limit, 20, 1, 100);
 
     const allMatches = this.findAllSymbols(cg, symbol);
     if (allMatches.nodes.length === 0) {
@@ -339,7 +366,7 @@ export class ToolHandler {
     if (typeof symbol !== 'string') return symbol;
 
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
-    const limit = clamp((args.limit as number) || 20, 1, 100);
+    const limit = boundedNumber(args.limit, 20, 1, 100);
 
     const allMatches = this.findAllSymbols(cg, symbol);
     if (allMatches.nodes.length === 0) {
@@ -374,7 +401,7 @@ export class ToolHandler {
     if (typeof symbol !== 'string') return symbol;
 
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
-    const depth = clamp((args.depth as number) || 2, 1, 10);
+    const depth = boundedNumber(args.depth, 2, 1, 10);
 
     const allMatches = this.findAllSymbols(cg, symbol);
     if (allMatches.nodes.length === 0) {
@@ -427,7 +454,7 @@ export class ToolHandler {
 
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     const output = await buildExploreOutput(cg, query, {
-      maxFiles: args.maxFiles as number | undefined,
+      maxFiles: optionalBoundedNumber(args.maxFiles, 1, 20),
     });
     return this.textResult(output);
   }
@@ -463,46 +490,7 @@ export class ToolHandler {
    */
   private async handleStatus(args: Record<string, unknown>): Promise<ToolResult> {
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
-    const stats = cg.getStats();
-
-    const lines: string[] = [
-      '## CodeGraph Status',
-      '',
-      `**Files indexed:** ${stats.fileCount}`,
-      `**Total nodes:** ${stats.nodeCount}`,
-      `**Total edges:** ${stats.edgeCount}`,
-      `**Database size:** ${(stats.dbSizeBytes / 1024 / 1024).toFixed(2)} MB`,
-    ];
-
-    // Surface the active SQLite backend. Without this, users on the
-    // silent WASM fallback (better-sqlite3 install failed) see "slow"
-    // indexing and DB-lock errors with no signal of why.
-    const backend = cg.getBackend();
-    if (backend === 'native') {
-      lines.push(`**Backend:** native (better-sqlite3)`);
-    } else {
-      lines.push(
-        `**Backend:** ⚠ wasm (better-sqlite3 unavailable) — ` +
-        `5-10x slower than native. Fix: ${WASM_FALLBACK_FIX_RECIPE}`
-      );
-    }
-
-    lines.push('', '### Nodes by Kind:');
-
-    for (const [kind, count] of Object.entries(stats.nodesByKind)) {
-      if ((count as number) > 0) {
-        lines.push(`- ${kind}: ${count}`);
-      }
-    }
-
-    lines.push('', '### Languages:');
-    for (const [lang, count] of Object.entries(stats.filesByLanguage)) {
-      if ((count as number) > 0) {
-        lines.push(`- ${lang}: ${count}`);
-      }
-    }
-
-    return this.textResult(lines.join('\n'));
+    return this.textResult(buildMcpStatusOutput(cg));
   }
 
   /**
@@ -514,7 +502,7 @@ export class ToolHandler {
     const pattern = args.pattern as string | undefined;
     const format = (args.format as 'tree' | 'flat' | 'grouped') || 'tree';
     const includeMetadata = args.includeMetadata !== false;
-    const maxDepth = args.maxDepth != null ? clamp(args.maxDepth as number, 1, 20) : undefined;
+    const maxDepth = optionalBoundedNumber(args.maxDepth, 1, 20);
 
     // Get all files from the index
     const allFiles = cg.getFiles();
