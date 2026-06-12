@@ -16,8 +16,8 @@ import { filterMcpFiles, formatMcpFiles } from './files-output';
 import {
   formatNodeDetails,
   formatSearchResults,
-  formatTaskContext,
 } from './format-output';
+import { buildContextOutput } from './context-output';
 import {
   findAllSymbols as resolveAllSymbols,
   findSymbol as resolveSymbol,
@@ -273,53 +273,7 @@ export class ToolHandler {
     const maxNodes = boundedNumber(args.maxNodes, 20, 1, 100);
     const includeCode = args.includeCode !== false;
 
-    const context = await cg.buildContext(task, {
-      maxNodes,
-      includeCode,
-      format: 'markdown',
-    });
-
-    // Detect if this looks like a feature request (vs bug fix or exploration)
-    const isFeatureQuery = this.looksLikeFeatureRequest(task);
-    const reminder = isFeatureQuery
-      ? '\n\n⚠️ **Ask user:** UX preferences, edge cases, acceptance criteria'
-      : '';
-
-    // buildContext returns string when format is 'markdown'
-    if (typeof context === 'string') {
-      return this.textResult(context + reminder);
-    }
-
-    // If it returns TaskContext, format it
-    return this.textResult(formatTaskContext(context) + reminder);
-  }
-
-  /**
-   * Heuristic to detect if a query looks like a feature request
-   */
-  private looksLikeFeatureRequest(task: string): boolean {
-    const featureKeywords = [
-      'add', 'create', 'implement', 'build', 'enable', 'allow',
-      'new feature', 'support for', 'ability to', 'want to',
-      'should be able', 'need to add', 'swap', 'edit', 'modify'
-    ];
-    const bugKeywords = [
-      'fix', 'bug', 'error', 'broken', 'crash', 'issue', 'problem',
-      'not working', 'fails', 'undefined', 'null'
-    ];
-    const explorationKeywords = [
-      'how does', 'where is', 'what is', 'find', 'show me',
-      'explain', 'understand', 'explore'
-    ];
-
-    const lowerTask = task.toLowerCase();
-
-    // If it's clearly a bug or exploration, not a feature
-    if (bugKeywords.some(k => lowerTask.includes(k))) return false;
-    if (explorationKeywords.some(k => lowerTask.includes(k))) return false;
-
-    // If it matches feature keywords, it's likely a feature request
-    return featureKeywords.some(k => lowerTask.includes(k));
+    return this.textResult(await buildContextOutput(cg, task, { maxNodes, includeCode }));
   }
 
   /**
