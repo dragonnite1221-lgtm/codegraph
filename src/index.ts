@@ -24,7 +24,7 @@ import {
   FindRelevantContextOptions,
 } from './types';
 import { DatabaseConnection, getDatabasePath } from './db';
-import { QueryBuilder } from './db/queries';
+import { QueryBuilder, type FileQueryOptions } from './db/queries';
 import { loadConfig, saveConfig, createDefaultConfig } from './config';
 import {
   isInitialized,
@@ -686,8 +686,12 @@ export class CodeGraph {
   /**
    * Get all tracked files
    */
-  getFiles(): FileRecord[] {
-    return this.queries.getAllFiles();
+  getFiles(options: FileQueryOptions = {}): FileRecord[] {
+    return this.queries.getAllFiles(options);
+  }
+
+  countFiles(options: Pick<FileQueryOptions, 'pathPrefix'> = {}): number {
+    return this.queries.countFiles(options);
   }
 
   // ===========================================================================

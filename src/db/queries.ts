@@ -38,6 +38,34 @@ import {
   runSetMetadata,
 } from './summary-queries';
 
+export type FileQueryOptions = {
+  pathPrefix?: string;
+  limit?: number;
+};
+
+function normalizePathPrefix(pathPrefix?: string): string | undefined {
+  let value = pathPrefix?.trim();
+  while (value?.startsWith('./')) {
+    value = value.slice(2);
+  }
+  return value || undefined;
+}
+
+function escapeSqlLike(value: string): string {
+  return value.replace(/[\\%_]/g, char => `\\${char}`);
+}
+
+function buildFilePrefixWhere(pathPrefix?: string): { clause: string; params: unknown[] } {
+  const normalized = normalizePathPrefix(pathPrefix);
+  if (!normalized) {
+    return { clause: '', params: [] };
+  }
+  return {
+    clause: " WHERE path LIKE ? ESCAPE '\\'",
+    params: [`${escapeSqlLike(normalized)}%`],
+  };
+}
+
 /**
  * Query builder for the knowledge graph database
  */
@@ -606,12 +634,36 @@ export class QueryBuilder {
   /**
    * Get all tracked files
    */
-  getAllFiles(): FileRecord[] {
-    if (!this.stmts.getAllFiles) {
-      this.stmts.getAllFiles = this.db.prepare('SELECT * FROM files ORDER BY path');
+  getAllFiles(options: FileQueryOptions = {}): FileRecord[] {
+    const pathPrefix = normalizePathPrefix(options.pathPrefix);
+    const limit = options.limit && options.limit > 0 ? Math.floor(options.limit) : undefined;
+
+    if (!pathPrefix && limit === undefined) {
+      if (!this.stmts.getAllFiles) {
+        this.stmts.getAllFiles = this.db.prepare('SELECT * FROM files ORDER BY path');
+      }
+      const rows = this.stmts.getAllFiles.all() as FileRow[];
+      return rows.map(rowToFileRecord);
     }
-    const rows = this.stmts.getAllFiles.all() as FileRow[];
+
+    const where = buildFilePrefixWhere(pathPrefix);
+    let sql = `SELECT * FROM files${where.clause} ORDER BY path`;
+    const params = [...where.params];
+    if (limit !== undefined) {
+      sql += ' LIMIT ?';
+      params.push(limit);
+    }
+    const rows = this.withStatement(sql, stmt => stmt.all(...params) as FileRow[]);
     return rows.map(rowToFileRecord);
+  }
+
+  countFiles(options: Pick<FileQueryOptions, 'pathPrefix'> = {}): number {
+    const where = buildFilePrefixWhere(options.pathPrefix);
+    const row = this.withStatement(
+      `SELECT COUNT(*) as count FROM files${where.clause}`,
+      stmt => stmt.get(...where.params) as { count?: number } | undefined,
+    );
+    return Number(row?.count || 0);
   }
 
   /**

@@ -10,14 +10,17 @@ import { createHash } from 'crypto';
 import { writeFileSync } from 'fs';
 import { clamp } from '../utils';
 import { tmpdir } from 'os';
-import { join, resolve } from 'path';
+import { isAbsolute, join, relative, resolve } from 'path';
 import { buildExploreOutput, getExploreBudget } from './explore-output';
-import { filterMcpFiles, formatMcpFiles } from './files-output';
 import {
-  formatNodeDetails,
-  formatSearchResults,
-} from './format-output';
+  DEFAULT_MCP_FILES_LIMIT,
+  filterMcpFiles,
+  formatMcpFiles,
+  limitMcpFiles,
+  type McpFileEntry,
+} from './files-output';
 import { buildContextOutput } from './context-output';
+import { buildNodeOutput, buildSearchOutput } from './lookup-output';
 import {
   findAllSymbols as resolveAllSymbols,
   findSymbol as resolveSymbol,
@@ -62,6 +65,11 @@ function optionalBoundedNumber(value: unknown, min: number, max: number): number
   return Number.isFinite(parsed) ? clamp(parsed, min, max) : undefined;
 }
 
+function pathContains(parent: string, child: string): boolean {
+  const rel = relative(parent, child);
+  return rel === '' || (!!rel && !rel.startsWith('..') && !isAbsolute(rel));
+}
+
 /**
  * Mark a Claude session as having consulted MCP tools.
  * This enables Grep/Glob/Bash commands that would otherwise be blocked.
@@ -90,6 +98,8 @@ export class ToolHandler {
   // Cache of opened CodeGraph instances for cross-project queries, keyed by
   // resolved project root to avoid duplicate SQLite handles for path aliases.
   private projectCache: Map<string, CodeGraph> = new Map();
+  private activeExecutions = 0;
+  private pendingProjectCloses: Set<CodeGraph> = new Set();
 
   constructor(private cg: CodeGraph | null) {}
 
@@ -152,11 +162,22 @@ export class ToolHandler {
 
     const requestedPath = resolve(projectPath);
 
+    if (this.cg) {
+      const defaultRoot = resolve(this.cg.getProjectRoot());
+      if (pathContains(defaultRoot, requestedPath)) {
+        return this.cg;
+      }
+    }
+
     // Walk up parent directories to find nearest .codegraph/
     const resolvedRoot = findNearestCodeGraphRoot(requestedPath);
 
     if (!resolvedRoot) {
       throw new Error(`CodeGraph not initialized in ${projectPath}. Run 'codegraph init' in that project first.`);
+    }
+
+    if (this.cg && resolve(this.cg.getProjectRoot()) === resolvedRoot) {
+      return this.cg;
     }
 
     if (this.projectCache.has(resolvedRoot)) {
@@ -175,18 +196,40 @@ export class ToolHandler {
       if (!oldest) return;
       const [projectRoot, cg] = oldest;
       this.projectCache.delete(projectRoot);
+      this.closeProjectWhenIdle(cg);
+    }
+  }
+
+  private closeProjectWhenIdle(cg: CodeGraph): void {
+    if (this.activeExecutions > 0) {
+      this.pendingProjectCloses.add(cg);
+      return;
+    }
+    cg.close();
+  }
+
+  private flushPendingProjectCloses(): void {
+    if (this.activeExecutions > 0) return;
+    for (const cg of this.pendingProjectCloses) {
       cg.close();
     }
+    this.pendingProjectCloses.clear();
   }
 
   /**
    * Close all cached project connections
    */
   closeAll(): void {
-    for (const cg of new Set(this.projectCache.values())) {
+    for (const cg of new Set([
+      ...(this.cg ? [this.cg] : []),
+      ...this.projectCache.values(),
+      ...this.pendingProjectCloses,
+    ])) {
       cg.close();
     }
+    this.cg = null;
     this.projectCache.clear();
+    this.pendingProjectCloses.clear();
   }
 
   /**
@@ -203,6 +246,7 @@ export class ToolHandler {
    * Execute a tool by name
    */
   async execute(toolName: string, args: Record<string, unknown>): Promise<ToolResult> {
+    this.activeExecutions++;
     try {
       switch (toolName) {
         case 'codegraph_search':
@@ -228,6 +272,9 @@ export class ToolHandler {
       }
     } catch (err) {
       return this.errorResult(`Tool execution failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      this.activeExecutions--;
+      this.flushPendingProjectCloses();
     }
   }
 
@@ -239,21 +286,10 @@ export class ToolHandler {
     if (typeof query !== 'string') return query;
 
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
-    const kind = args.kind as string | undefined;
-    const rawLimit = Number(args.limit) || 10;
-    const limit = clamp(rawLimit, 1, 100);
+    const kind = args.kind as NodeKind | undefined;
+    const limit = boundedNumber(args.limit, 10, 1, 100);
 
-    const results = cg.searchNodes(query, {
-      limit,
-      kinds: kind ? [kind as NodeKind] : undefined,
-    });
-
-    if (results.length === 0) {
-      return this.textResult(`No results found for "${query}"`);
-    }
-
-    const formatted = formatSearchResults(results);
-    return this.textResult(this.truncateOutput(formatted));
+    return this.textResult(this.truncateOutput(buildSearchOutput(cg, query, { limit, kind })));
   }
 
   /**
@@ -345,22 +381,9 @@ export class ToolHandler {
     if (typeof symbol !== 'string') return symbol;
 
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
-    // Default to false to minimize context usage
     const includeCode = args.includeCode === true;
 
-    const match = this.findSymbol(cg, symbol);
-    if (!match) {
-      return this.textResult(`Symbol "${symbol}" not found in the codebase`);
-    }
-
-    let code: string | null = null;
-
-    if (includeCode) {
-      code = await cg.getCode(match.node.id);
-    }
-
-    const formatted = formatNodeDetails(match.node, code) + match.note;
-    return this.textResult(this.truncateOutput(formatted));
+    return this.textResult(this.truncateOutput(await buildNodeOutput(cg, symbol, includeCode)));
   }
 
   /**
@@ -381,21 +404,37 @@ export class ToolHandler {
     const format = (args.format as 'tree' | 'flat' | 'grouped') || 'tree';
     const includeMetadata = args.includeMetadata !== false;
     const maxDepth = optionalBoundedNumber(args.maxDepth, 1, 20);
+    const limit = boundedNumber(args.limit, DEFAULT_MCP_FILES_LIMIT, 1, 5000);
 
-    // Get all files from the index
-    const allFiles = cg.getFiles();
-
-    if (allFiles.length === 0) {
+    const totalIndexedFiles = pathFilter || pattern ? undefined : cg.countFiles();
+    if (totalIndexedFiles === 0) {
       return this.textResult('No files indexed. Run `codegraph index` first.');
     }
 
-    const files = filterMcpFiles(allFiles, { pathFilter, pattern });
+    let files: McpFileEntry[];
+    let omitted = 0;
+    if (pattern) {
+      const pathScopedFiles = cg.getFiles({ pathPrefix: pathFilter });
+      files = filterMcpFiles(pathScopedFiles, { pattern });
+      const limited = limitMcpFiles(files, limit);
+      files = limited.files;
+      omitted = limited.omitted;
+    } else {
+      const totalMatches = cg.countFiles({ pathPrefix: pathFilter });
+      files = cg.getFiles({ pathPrefix: pathFilter, limit });
+      omitted = Math.max(0, totalMatches - files.length);
+    }
 
     if (files.length === 0) {
       return this.textResult(`No files found matching the criteria.`);
     }
 
-    const output = formatMcpFiles(files, { includeMetadata, format, maxDepth });
+    const output = formatMcpFiles(files, {
+      includeMetadata,
+      format,
+      maxDepth,
+      omitted,
+    });
 
     return this.textResult(this.truncateOutput(output));
   }
@@ -406,7 +445,7 @@ export class ToolHandler {
 
   // Kept as wrappers for compatibility with existing tests that inspect
   // ToolHandler internals; the implementation lives in symbol-resolution.ts.
-  private findSymbol(cg: CodeGraph, symbol: string): SymbolMatch | null {
+  findSymbol(cg: CodeGraph, symbol: string): SymbolMatch | null {
     return resolveSymbol(cg, symbol);
   }
 

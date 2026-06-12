@@ -210,6 +210,10 @@ export const tools: ToolDefinition[] = [
           type: 'number',
           description: 'Maximum directory depth to show (default: unlimited)',
         },
+        limit: {
+          type: 'number',
+          description: 'Maximum number of files to render before truncating the file list (default: 500, max: 5000)',
+        },
         projectPath: projectPathProperty,
       },
     },

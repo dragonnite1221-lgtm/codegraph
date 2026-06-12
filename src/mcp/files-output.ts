@@ -5,6 +5,7 @@ export type McpFileEntry = {
 };
 
 export type McpFilesFormat = 'tree' | 'flat' | 'grouped';
+export const DEFAULT_MCP_FILES_LIMIT = 500;
 
 export function filterMcpFiles(
   files: McpFileEntry[],
@@ -22,7 +23,29 @@ export function filterMcpFiles(
   return filtered;
 }
 
+export function limitMcpFiles(files: McpFileEntry[], limit: number): {
+  files: McpFileEntry[];
+  omitted: number;
+} {
+  if (files.length <= limit) {
+    return { files, omitted: 0 };
+  }
+  return { files: files.slice(0, limit), omitted: files.length - limit };
+}
+
 export function formatMcpFiles(
+  files: McpFileEntry[],
+  options: { includeMetadata: boolean; format: McpFilesFormat; maxDepth?: number; omitted?: number },
+): string {
+  const omitted = options.omitted || 0;
+  const output = formatMcpFilesBody(files, options);
+  if (omitted <= 0) {
+    return output;
+  }
+  return `${output}\n\n... (${omitted} more files omitted; narrow with path/pattern or increase limit)`;
+}
+
+function formatMcpFilesBody(
   files: McpFileEntry[],
   options: { includeMetadata: boolean; format: McpFilesFormat; maxDepth?: number },
 ): string {
@@ -50,7 +73,7 @@ function globToRegex(pattern: string): RegExp {
 function formatFilesFlat(files: McpFileEntry[], includeMetadata: boolean): string {
   const lines: string[] = [`## Files (${files.length})`, ''];
 
-  for (const file of files.sort((a, b) => a.path.localeCompare(b.path))) {
+  for (const file of [...files].sort((a, b) => a.path.localeCompare(b.path))) {
     if (includeMetadata) {
       lines.push(`- ${file.path} (${file.language}, ${file.nodeCount} symbols)`);
     } else {
@@ -75,7 +98,7 @@ function formatFilesGrouped(files: McpFileEntry[], includeMetadata: boolean): st
 
   for (const [lang, langFiles] of sortedLangs) {
     lines.push(`### ${lang} (${langFiles.length})`);
-    for (const file of langFiles.sort((a, b) => a.path.localeCompare(b.path))) {
+    for (const file of [...langFiles].sort((a, b) => a.path.localeCompare(b.path))) {
       if (includeMetadata) {
         lines.push(`- ${file.path} (${file.nodeCount} symbols)`);
       } else {

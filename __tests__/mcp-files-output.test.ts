@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { filterMcpFiles, formatMcpFiles } from '../src/mcp/files-output';
+import { filterMcpFiles, formatMcpFiles, limitMcpFiles } from '../src/mcp/files-output';
 
 const files = [
   { path: 'src/index.ts', language: 'typescript', nodeCount: 3 },
@@ -49,5 +49,18 @@ describe('MCP files output helpers', () => {
     expect(output).toContain('├── src');
     expect(output).toContain('└── README.md');
     expect(output).not.toContain('codegraph.ts');
+  });
+
+  it('limits files before formatting and reports omitted entries', () => {
+    const limited = limitMcpFiles(files, 2);
+    const output = formatMcpFiles(limited.files, {
+      includeMetadata: false,
+      format: 'flat',
+      omitted: limited.omitted,
+    });
+
+    expect(limited.files.map(file => file.path)).toEqual(['src/index.ts', 'src/bin/codegraph.ts']);
+    expect(output).toContain('## Files (2)');
+    expect(output).toContain('... (1 more files omitted; narrow with path/pattern or increase limit)');
   });
 });
