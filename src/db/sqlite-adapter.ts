@@ -9,6 +9,7 @@ export interface SqliteStatement {
   run(...params: any[]): { changes: number; lastInsertRowid: number | bigint };
   get(...params: any[]): any;
   all(...params: any[]): any[];
+  finalize?(): void;
 }
 
 export interface SqliteDatabase {
@@ -76,12 +77,149 @@ export function buildWasmFallbackBanner(nativeError?: string): string {
  * Returns the rewritten SQL and an ordered list of parameter names.
  * If no named params are found, returns null for paramOrder (positional mode).
  */
-function translateNamedParams(sql: string): { sql: string; paramOrder: string[] | null } {
+export function translateNamedParams(sql: string): { sql: string; paramOrder: string[] | null } {
   const paramOrder: string[] = [];
-  const rewritten = sql.replace(/@(\w+)/g, (_match, name: string) => {
-    paramOrder.push(name);
-    return '?';
-  });
+  let rewritten = '';
+  let i = 0;
+  let state:
+    | 'code'
+    | 'single'
+    | 'double'
+    | 'backtick'
+    | 'bracket'
+    | 'line-comment'
+    | 'block-comment' = 'code';
+
+  while (i < sql.length) {
+    const ch = sql[i];
+    const next = sql[i + 1];
+
+    if (state === 'line-comment') {
+      rewritten += ch;
+      if (ch === '\n') state = 'code';
+      i += 1;
+      continue;
+    }
+
+    if (state === 'block-comment') {
+      if (ch === '*' && next === '/') {
+        rewritten += '*/';
+        state = 'code';
+        i += 2;
+      } else {
+        rewritten += ch;
+        i += 1;
+      }
+      continue;
+    }
+
+    if (state === 'single') {
+      rewritten += ch;
+      if (ch === "'" && next === "'") {
+        rewritten += next;
+        i += 2;
+      } else {
+        if (ch === "'") state = 'code';
+        i += 1;
+      }
+      continue;
+    }
+
+    if (state === 'double') {
+      rewritten += ch;
+      if (ch === '"' && next === '"') {
+        rewritten += next;
+        i += 2;
+      } else {
+        if (ch === '"') state = 'code';
+        i += 1;
+      }
+      continue;
+    }
+
+    if (state === 'backtick') {
+      rewritten += ch;
+      if (ch === '`' && next === '`') {
+        rewritten += next;
+        i += 2;
+      } else {
+        if (ch === '`') state = 'code';
+        i += 1;
+      }
+      continue;
+    }
+
+    if (state === 'bracket') {
+      rewritten += ch;
+      if (ch === ']' && next === ']') {
+        rewritten += next;
+        i += 2;
+      } else {
+        if (ch === ']') state = 'code';
+        i += 1;
+      }
+      continue;
+    }
+
+    if (ch === '-' && next === '-') {
+      rewritten += '--';
+      state = 'line-comment';
+      i += 2;
+      continue;
+    }
+
+    if (ch === '/' && next === '*') {
+      rewritten += '/*';
+      state = 'block-comment';
+      i += 2;
+      continue;
+    }
+
+    if (ch === "'") {
+      rewritten += ch;
+      state = 'single';
+      i += 1;
+      continue;
+    }
+
+    if (ch === '"') {
+      rewritten += ch;
+      state = 'double';
+      i += 1;
+      continue;
+    }
+
+    if (ch === '`') {
+      rewritten += ch;
+      state = 'backtick';
+      i += 1;
+      continue;
+    }
+
+    if (ch === '[') {
+      rewritten += ch;
+      state = 'bracket';
+      i += 1;
+      continue;
+    }
+
+    if (ch === '@' && next && /\w/.test(next)) {
+      let end = i + 1;
+      while (end < sql.length) {
+        const paramChar = sql[end];
+        if (!paramChar || !/\w/.test(paramChar)) break;
+        end += 1;
+      }
+      paramOrder.push(sql.slice(i + 1, end));
+      rewritten += '?';
+      i = end;
+      continue;
+    }
+
+    rewritten += ch;
+    i += 1;
+  }
+
   if (paramOrder.length === 0) {
     return { sql, paramOrder: null };
   }
@@ -110,6 +248,19 @@ function resolveParams(params: any[], paramOrder: string[] | null): any {
   return params;
 }
 
+export function rollbackAndRethrowTransactionError(
+  db: { exec(sql: string): void },
+  error: unknown
+): never {
+  try {
+    db.exec('ROLLBACK');
+  } catch {
+    // SQLite can auto-rollback on some failures; preserve the original
+    // database error instead of replacing it with "no transaction".
+  }
+  throw error;
+}
+
 /**
  * Wraps node-sqlite3-wasm to match the better-sqlite3 interface.
  *
@@ -123,9 +274,11 @@ function resolveParams(params: any[], paramOrder: string[] | null): any {
  */
 class WasmDatabaseAdapter implements SqliteDatabase {
   private _db: any;
-  // Track raw WASM statements so we can finalize them on close.
-  // node-sqlite3-wasm won't release its file lock if statements are left open.
-  private _openStmts = new Set<any>();
+  private _closed = false;
+  // Track WASM statement handles so VACUUM and close can finalize them.
+  // The wrapper can lazily reprepare after a release, preserving the reusable
+  // statement contract that callers expect from better-sqlite3.
+  private _openStmts = new Set<{ sql: string; stmt: any | null }>();
 
   constructor(dbPath: string) {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -139,11 +292,41 @@ class WasmDatabaseAdapter implements SqliteDatabase {
 
   prepare(sql: string): SqliteStatement {
     const { sql: rewrittenSql, paramOrder } = translateNamedParams(sql);
-    const stmt = this._db.prepare(rewrittenSql);
-    this._openStmts.add(stmt);
+    const record = { sql: rewrittenSql, stmt: this._db.prepare(rewrittenSql) };
+    this._openStmts.add(record);
+    let finalized = false;
+
+    const getStmt = () => {
+      if (this._closed) {
+        throw new Error('Database already closed');
+      }
+      if (finalized) {
+        throw new Error('Statement already finalized');
+      }
+      if (!record.stmt) {
+        record.stmt = this._db.prepare(record.sql);
+      }
+      return record.stmt;
+    };
+
+    const finalizeRecord = () => {
+      if (!record.stmt) {
+        this._openStmts.delete(record);
+        return;
+      }
+      try {
+        record.stmt.finalize();
+      } catch {
+        // Already finalized by the WASM runtime.
+      }
+      record.stmt = null;
+      this._openStmts.delete(record);
+    };
+
     return {
       run(...params: any[]) {
         const resolved = resolveParams(params, paramOrder);
+        const stmt = getStmt();
         const result = resolved !== undefined ? stmt.run(resolved) : stmt.run();
         return {
           changes: result?.changes ?? 0,
@@ -152,16 +335,25 @@ class WasmDatabaseAdapter implements SqliteDatabase {
       },
       get(...params: any[]) {
         const resolved = resolveParams(params, paramOrder);
+        const stmt = getStmt();
         return resolved !== undefined ? stmt.get(resolved) : stmt.get();
       },
       all(...params: any[]) {
         const resolved = resolveParams(params, paramOrder);
+        const stmt = getStmt();
         return resolved !== undefined ? stmt.all(resolved) : stmt.all();
+      },
+      finalize() {
+        finalized = true;
+        finalizeRecord();
       },
     };
   }
 
   exec(sql: string): void {
+    if (sql.trim().toUpperCase().startsWith('VACUUM')) {
+      this.releaseStatements();
+    }
     this._db.exec(sql);
   }
 
@@ -210,21 +402,36 @@ class WasmDatabaseAdapter implements SqliteDatabase {
         this._db.exec('COMMIT');
         return result;
       } catch (error) {
-        this._db.exec('ROLLBACK');
-        throw error;
+        rollbackAndRethrowTransactionError(this._db, error);
       }
     };
   }
 
   close(): void {
-    // Finalize all tracked statements before closing.
-    // node-sqlite3-wasm won't release its directory-based file lock
-    // if any prepared statements remain open.
-    for (const stmt of this._openStmts) {
-      try { stmt.finalize(); } catch { /* already finalized */ }
+    if (this._closed || !this._db.isOpen) {
+      this._closed = true;
+      return;
     }
-    this._openStmts.clear();
+    this.releaseStatements(true);
     this._db.close();
+    this._closed = true;
+  }
+
+  private releaseStatements(clearRecords = false): void {
+    // node-sqlite3-wasm keeps SQL statements active until finalized. Leaving
+    // them open blocks VACUUM and can make repeated close paths throw.
+    for (const record of this._openStmts) {
+      if (!record.stmt) continue;
+      try {
+        record.stmt.finalize();
+      } catch {
+        // Already finalized by the WASM runtime.
+      }
+      record.stmt = null;
+    }
+    if (clearRecords) {
+      this._openStmts.clear();
+    }
   }
 }
 

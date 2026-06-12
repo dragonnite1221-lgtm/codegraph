@@ -8,7 +8,7 @@
 
 [![npm version](https://img.shields.io/npm/v/@colbymchenry/codegraph.svg)](https://www.npmjs.com/package/@colbymchenry/codegraph)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Node.js](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-18--23-green.svg)](https://nodejs.org/)
 
 [![Windows](https://img.shields.io/badge/Windows-supported-blue.svg)](#)
 [![macOS](https://img.shields.io/badge/macOS-supported-blue.svg)](#)
@@ -47,6 +47,15 @@ codegraph init -i
 When Claude Code explores a codebase, it spawns **Explore agents** that scan files with grep, glob, and Read — consuming tokens on every tool call.
 
 **CodeGraph gives those agents a pre-indexed knowledge graph** — symbol relationships, call graphs, and code structure. Agents query the graph instantly instead of scanning files.
+
+## Development Runtime
+
+CodeGraph supports Node.js `>=18 <24`; Node 22 LTS is the recommended development runtime. The test preflight intentionally stops on Node 24+ because compiling the bundled tree-sitter WASM grammars can crash that runtime with a V8 `Zone` out-of-memory failure. Version managers can use the checked-in `.node-version` file before running the full test suite:
+
+```bash
+node -v
+npm test
+```
 
 ### Benchmark Results
 

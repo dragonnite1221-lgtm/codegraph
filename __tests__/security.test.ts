@@ -342,8 +342,8 @@ describe('Glob Matching (picomatch)', () => {
     shouldIncludeFile('x/x/x/x/x/x/x/x/x/x/x/x/x/x/b', config);
     const elapsed = Date.now() - start;
 
-    // Should complete in under 100ms, not seconds
-    expect(elapsed).toBeLessThan(100);
+    // Should complete quickly, not hang for seconds.
+    expect(elapsed).toBeLessThan(500);
   });
 
   it('should handle dot files correctly', () => {

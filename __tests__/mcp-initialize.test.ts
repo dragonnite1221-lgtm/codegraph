@@ -22,6 +22,7 @@ const BIN = path.resolve(__dirname, '../dist/bin/codegraph.js');
 function spawnServer(cwd: string): ChildProcessWithoutNullStreams {
   return spawn(process.execPath, [BIN, 'serve', '--mcp'], {
     cwd,
+    env: { ...process.env, CODEGRAPH_ALLOW_UNSAFE_NODE: '1' },
     stdio: ['pipe', 'pipe', 'pipe'],
   }) as ChildProcessWithoutNullStreams;
 }

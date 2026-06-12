@@ -11,6 +11,8 @@ import * as path from 'path';
 import * as os from 'os';
 import {
   buildWasmFallbackBanner,
+  rollbackAndRethrowTransactionError,
+  translateNamedParams,
   WASM_FALLBACK_FIX_RECIPE,
 } from '../src/db/sqlite-adapter';
 import { DatabaseConnection } from '../src/db';
@@ -50,6 +52,55 @@ describe('WASM_FALLBACK_FIX_RECIPE — single source of truth', () => {
     expect(WASM_FALLBACK_FIX_RECIPE).toContain(
       'npm install better-sqlite3 --save'
     );
+  });
+});
+
+describe('rollbackAndRethrowTransactionError', () => {
+  it('preserves the original transaction error when rollback also fails', () => {
+    const original = new Error('insert failed');
+    const db = {
+      exec(sql: string): void {
+        expect(sql).toBe('ROLLBACK');
+        throw new Error('cannot rollback - no transaction is active');
+      },
+    };
+
+    expect(() => rollbackAndRethrowTransactionError(db, original)).toThrow(original);
+  });
+});
+
+describe('translateNamedParams', () => {
+  it('does not replace @ characters inside SQL string literals or comments', () => {
+    const result = translateNamedParams(
+      "SELECT '@literal' AS email, value FROM users -- @comment\nWHERE id = @id AND note = 'user@domain.com'"
+    );
+
+    expect(result.sql).toBe(
+      "SELECT '@literal' AS email, value FROM users -- @comment\nWHERE id = ? AND note = 'user@domain.com'"
+    );
+    expect(result.paramOrder).toEqual(['id']);
+  });
+
+  it('preserves escaped quotes and quoted identifiers while translating params', () => {
+    const result = translateNamedParams(
+      `SELECT "owner@name", 'it''s @literal' FROM t WHERE a = @a AND b = @b`
+    );
+
+    expect(result.sql).toBe(
+      `SELECT "owner@name", 'it''s @literal' FROM t WHERE a = ? AND b = ?`
+    );
+    expect(result.paramOrder).toEqual(['a', 'b']);
+  });
+
+  it('preserves backtick and bracket quoted identifiers', () => {
+    const result = translateNamedParams(
+      'SELECT `owner@name`, [user@domain] FROM t WHERE id = @id'
+    );
+
+    expect(result.sql).toBe(
+      'SELECT `owner@name`, [user@domain] FROM t WHERE id = ?'
+    );
+    expect(result.paramOrder).toEqual(['id']);
   });
 });
 

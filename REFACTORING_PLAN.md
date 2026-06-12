@@ -46,7 +46,7 @@
 
 | 작업 | 내용 | 규모 | 리스크 | 검증 |
 |---|---|---|---|---|
-| tree-sitter.ts 분해 | 언어 wrapper 로딩/파싱 코어와 언어별 설정 분리 (`languages/`와 대칭 구조로) | L | 추출 결과 회귀 — evaluation 러너로 사전/사후 점수 비교 | `npm test` + `npm run eval` |
+| tree-sitter.ts 분해 | 언어 wrapper 로딩/파싱 코어와 언어별 설정 분리 (`languages/`와 대칭 구조로) | L | 추출 결과 회귀 — evaluation 러너로 사전/사후 점수 비교 | `npm test` + `EVAL_CODEBASE=/path/to/indexed/codebase npm run eval` |
 | mcp/tools.ts 분해 | 도구별 모듈 + 레지스트리 패턴. server-instructions.ts와 도구 목록 일치 검사 스크립트 추가 | M | MCP 인터페이스 회귀 | mcp 테스트 + 지침 3종 diff 검사 |
 | bin/codegraph.ts 분해 | 서브커맨드별 파일 분리 | M | CLI 회귀 | CLI smoke 테스트 |
 | db/queries.ts 정리 | QueryBuilder를 도메인(nodes/edges/files/fts)별 분리 | M | prepared statement 누락 | sqlite-backend 테스트 |
@@ -61,6 +61,6 @@
 
 - [ ] `npx tsc --noEmit` 통과 유지
 - [ ] `npm test` — CI(Linux)와 macOS 모두 실패 0건
-- [ ] `npm run eval` 점수 리팩토링 전후 동등 이상
+- [ ] `EVAL_CODEBASE=/path/to/indexed/codebase npm run eval` 점수 리팩토링 전후 동등 이상
 - [ ] installer 변경 시 installer-targets 계약 테스트 + CHANGELOG 동반 확인
 - [ ] MCP 도구 변경 시 지침 3종 파일 도구 목록 일치

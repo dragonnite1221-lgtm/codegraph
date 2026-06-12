@@ -18,7 +18,8 @@ npm run clean           # rm -rf dist
 npm test                # vitest run (all)
 npm run test:watch
 npm run test:eval       # only __tests__/evaluation/
-npm run eval            # build then run __tests__/evaluation/runner.ts via tsx
+npm run eval -- /path/to/indexed/codebase
+                        # build then run __tests__/evaluation/runner.ts via tsx
 
 npm run cli             # build then run the local dist binary
 
@@ -29,7 +30,7 @@ npx vitest run __tests__/extraction.test.ts -t "TypeScript"
 
 `copy-assets` (called from `build`) copies `src/db/schema.sql` and all `src/extraction/wasm/*.wasm` files into `dist/`. **Any new SQL or grammar wasm must be copied or it won't ship.**
 
-Node engines: `>=18.0.0 <25.0.0`. There is a hard exit on Node 25.x (see `src/bin/node-version-check.ts`).
+Node engines: `>=18.0.0 <24.0.0`. There is a hard exit on Node 24.x and newer (see `src/bin/node-version-check.ts`).
 
 ## Architecture
 
@@ -95,7 +96,7 @@ Cursor launches MCP subprocesses with the wrong cwd and doesn't pass `rootUri` i
 Tests live in `__tests__/` and mirror the module they cover. Notable ones beyond the obvious:
 
 - `installer-targets.test.ts` — parameterized contract suite across all 4 agent targets (see installer notes above).
-- `evaluation/` — `runner.ts` + `test-cases.ts` exercise codegraph against synthetic projects and score the results; run via `npm run eval` (builds first). Not part of `npm test`.
+- `evaluation/` — `runner.ts` + `test-cases.ts` exercise codegraph against an already indexed codebase and score the results; run via `EVAL_CODEBASE=/path/to/indexed/codebase npm run eval` or `npm run eval -- /path/to/indexed/codebase` (builds first). The target must contain `.codegraph/codegraph.db`. Not part of `npm test`.
 - `sqlite-backend.test.ts` — covers native + wasm backend selection and fallback.
 - `pr19-improvements.test.ts`, `frameworks-integration.test.ts` — regression coverage for specific past PRs/incidents; don't rename these, the names anchor to git history.
 
