@@ -389,6 +389,39 @@ describe('JSON.parse Error Boundaries in DB', () => {
     db.close();
   });
 
+  it('should refresh getNodeById cache when insertNode replaces an existing node', () => {
+    const dbPath = path.join(tempDir, 'test.db');
+    const db = DatabaseConnection.initialize(dbPath);
+    const queries = new QueryBuilder(db.getDb());
+    const baseNode = {
+      id: 'cached-node',
+      kind: 'function' as const,
+      name: 'oldName',
+      qualifiedName: 'oldName',
+      filePath: 'test.ts',
+      language: 'typescript' as const,
+      startLine: 1,
+      endLine: 5,
+      startColumn: 0,
+      endColumn: 0,
+      updatedAt: Date.now(),
+    };
+
+    queries.insertNode(baseNode);
+    expect(queries.getNodeById('cached-node')?.name).toBe('oldName');
+
+    queries.insertNode({
+      ...baseNode,
+      name: 'newName',
+      qualifiedName: 'newName',
+      updatedAt: Date.now() + 1,
+    });
+
+    expect(queries.getNodeById('cached-node')?.name).toBe('newName');
+
+    db.close();
+  });
+
   it('should not crash when edge has malformed JSON in metadata column', () => {
     const dbPath = path.join(tempDir, 'test.db');
     const db = DatabaseConnection.initialize(dbPath);

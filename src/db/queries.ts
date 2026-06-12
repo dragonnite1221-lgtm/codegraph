@@ -12,7 +12,6 @@ import {
   UnresolvedReference,
   NodeKind,
   EdgeKind,
-  Language,
   GraphStats,
   SearchOptions,
   SearchResult,
@@ -32,6 +31,12 @@ import {
   runFindNodesByNameSubstring,
   runSearchNodes,
 } from './search-queries';
+import {
+  runGetAllMetadata,
+  runGetMetadata,
+  runGetStats,
+  runSetMetadata,
+} from './summary-queries';
 
 /**
  * Query builder for the knowledge graph database
@@ -149,6 +154,7 @@ export class QueryBuilder {
         typeParameters: node.typeParameters ? JSON.stringify(node.typeParameters) : null,
         updatedAt: node.updatedAt ?? Date.now(),
       });
+      this.nodeCache.delete(node.id);
     } catch (error) {
       throw error;
     }
@@ -808,51 +814,7 @@ export class QueryBuilder {
    * Get graph statistics
    */
   getStats(): GraphStats {
-    // Single query for all three aggregate counts
-    const counts = this.withStatement(`
-      SELECT
-        (SELECT COUNT(*) FROM nodes) AS node_count,
-        (SELECT COUNT(*) FROM edges) AS edge_count,
-        (SELECT COUNT(*) FROM files) AS file_count
-    `, (stmt) => stmt.get() as { node_count: number; edge_count: number; file_count: number });
-
-    const nodesByKind = {} as Record<NodeKind, number>;
-    const nodeKindRows = this.withStatement(
-      'SELECT kind, COUNT(*) as count FROM nodes GROUP BY kind',
-      (stmt) => stmt.all() as Array<{ kind: string; count: number }>
-    );
-    for (const row of nodeKindRows) {
-      nodesByKind[row.kind as NodeKind] = row.count;
-    }
-
-    const edgesByKind = {} as Record<EdgeKind, number>;
-    const edgeKindRows = this.withStatement(
-      'SELECT kind, COUNT(*) as count FROM edges GROUP BY kind',
-      (stmt) => stmt.all() as Array<{ kind: string; count: number }>
-    );
-    for (const row of edgeKindRows) {
-      edgesByKind[row.kind as EdgeKind] = row.count;
-    }
-
-    const filesByLanguage = {} as Record<Language, number>;
-    const languageRows = this.withStatement(
-      'SELECT language, COUNT(*) as count FROM files GROUP BY language',
-      (stmt) => stmt.all() as Array<{ language: string; count: number }>
-    );
-    for (const row of languageRows) {
-      filesByLanguage[row.language as Language] = row.count;
-    }
-
-    return {
-      nodeCount: counts.node_count,
-      edgeCount: counts.edge_count,
-      fileCount: counts.file_count,
-      nodesByKind,
-      edgesByKind,
-      filesByLanguage,
-      dbSizeBytes: 0, // Set by caller using DatabaseConnection.getSize()
-      lastUpdated: Date.now(),
-    };
+    return runGetStats({ runStatement: (sql, fn) => this.withStatement(sql, fn) });
   }
 
   // ===========================================================================
@@ -863,36 +825,21 @@ export class QueryBuilder {
    * Get a metadata value by key
    */
   getMetadata(key: string): string | null {
-    const row = this.withStatement(
-      'SELECT value FROM project_metadata WHERE key = ?',
-      (stmt) => stmt.get(key) as { value: string } | undefined
-    );
-    return row?.value ?? null;
+    return runGetMetadata({ runStatement: (sql, fn) => this.withStatement(sql, fn) }, key);
   }
 
   /**
    * Set a metadata key-value pair (upsert)
    */
   setMetadata(key: string, value: string): void {
-    this.withStatement(
-      'INSERT INTO project_metadata (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at',
-      (stmt) => stmt.run(key, value, Date.now())
-    );
+    runSetMetadata({ runStatement: (sql, fn) => this.withStatement(sql, fn) }, key, value);
   }
 
   /**
    * Get all metadata as a key-value record
    */
   getAllMetadata(): Record<string, string> {
-    const rows = this.withStatement(
-      'SELECT key, value FROM project_metadata',
-      (stmt) => stmt.all() as { key: string; value: string }[]
-    );
-    const result: Record<string, string> = {};
-    for (const row of rows) {
-      result[row.key] = row.value;
-    }
-    return result;
+    return runGetAllMetadata({ runStatement: (sql, fn) => this.withStatement(sql, fn) });
   }
 
   /**
