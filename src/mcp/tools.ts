@@ -5,7 +5,7 @@
  */
 
 import CodeGraph, { findNearestCodeGraphRoot } from '../index';
-import type { Node, Edge, NodeKind } from '../types';
+import type { NodeKind } from '../types';
 import { createHash } from 'crypto';
 import { writeFileSync } from 'fs';
 import { clamp } from '../utils';
@@ -14,9 +14,7 @@ import { join, resolve } from 'path';
 import { buildExploreOutput, getExploreBudget } from './explore-output';
 import { filterMcpFiles, formatMcpFiles } from './files-output';
 import {
-  formatImpact,
   formatNodeDetails,
-  formatNodeList,
   formatSearchResults,
   formatTaskContext,
 } from './format-output';
@@ -26,6 +24,7 @@ import {
   type SymbolMatch,
   type SymbolMatches,
 } from './symbol-resolution';
+import { buildCallersOutput, buildCalleesOutput, buildImpactOutput } from './relationship-output';
 import { buildMcpStatusOutput } from './status-output';
 import { tools } from './tool-definitions';
 import type { ToolDefinition, ToolResult } from './tool-types';
@@ -333,29 +332,7 @@ export class ToolHandler {
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     const limit = boundedNumber(args.limit, 20, 1, 100);
 
-    const allMatches = this.findAllSymbols(cg, symbol);
-    if (allMatches.nodes.length === 0) {
-      return this.textResult(`Symbol "${symbol}" not found in the codebase`);
-    }
-
-    // Aggregate callers across all matching symbols
-    const seen = new Set<string>();
-    const allCallers: Node[] = [];
-    for (const node of allMatches.nodes) {
-      for (const c of cg.getCallers(node.id)) {
-        if (!seen.has(c.node.id)) {
-          seen.add(c.node.id);
-          allCallers.push(c.node);
-        }
-      }
-    }
-
-    if (allCallers.length === 0) {
-      return this.textResult(`No callers found for "${symbol}"${allMatches.note}`);
-    }
-
-    const formatted = formatNodeList(allCallers.slice(0, limit), `Callers of ${symbol}`) + allMatches.note;
-    return this.textResult(this.truncateOutput(formatted));
+    return this.textResult(this.truncateOutput(buildCallersOutput(cg, symbol, limit)));
   }
 
   /**
@@ -368,29 +345,7 @@ export class ToolHandler {
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     const limit = boundedNumber(args.limit, 20, 1, 100);
 
-    const allMatches = this.findAllSymbols(cg, symbol);
-    if (allMatches.nodes.length === 0) {
-      return this.textResult(`Symbol "${symbol}" not found in the codebase`);
-    }
-
-    // Aggregate callees across all matching symbols
-    const seen = new Set<string>();
-    const allCallees: Node[] = [];
-    for (const node of allMatches.nodes) {
-      for (const c of cg.getCallees(node.id)) {
-        if (!seen.has(c.node.id)) {
-          seen.add(c.node.id);
-          allCallees.push(c.node);
-        }
-      }
-    }
-
-    if (allCallees.length === 0) {
-      return this.textResult(`No callees found for "${symbol}"${allMatches.note}`);
-    }
-
-    const formatted = formatNodeList(allCallees.slice(0, limit), `Callees of ${symbol}`) + allMatches.note;
-    return this.textResult(this.truncateOutput(formatted));
+    return this.textResult(this.truncateOutput(buildCalleesOutput(cg, symbol, limit)));
   }
 
   /**
@@ -403,38 +358,7 @@ export class ToolHandler {
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     const depth = boundedNumber(args.depth, 2, 1, 10);
 
-    const allMatches = this.findAllSymbols(cg, symbol);
-    if (allMatches.nodes.length === 0) {
-      return this.textResult(`Symbol "${symbol}" not found in the codebase`);
-    }
-
-    // Aggregate impact across all matching symbols
-    const mergedNodes = new Map<string, Node>();
-    const mergedEdges: Edge[] = [];
-    const seenEdges = new Set<string>();
-
-    for (const node of allMatches.nodes) {
-      const impact = cg.getImpactRadius(node.id, depth);
-      for (const [id, n] of impact.nodes) {
-        mergedNodes.set(id, n);
-      }
-      for (const e of impact.edges) {
-        const key = `${e.source}->${e.target}:${e.kind}`;
-        if (!seenEdges.has(key)) {
-          seenEdges.add(key);
-          mergedEdges.push(e);
-        }
-      }
-    }
-
-    const mergedImpact = {
-      nodes: mergedNodes,
-      edges: mergedEdges,
-      roots: allMatches.nodes.map(n => n.id),
-    };
-
-    const formatted = formatImpact(symbol, mergedImpact) + allMatches.note;
-    return this.textResult(this.truncateOutput(formatted));
+    return this.textResult(this.truncateOutput(buildImpactOutput(cg, symbol, depth)));
   }
 
   /**
@@ -526,14 +450,13 @@ export class ToolHandler {
   // Symbol resolution helpers
   // =========================================================================
 
-  // Kept as private wrappers for compatibility with existing tests that
-  // inspect ToolHandler internals; the implementation lives in
-  // symbol-resolution.ts.
+  // Kept as wrappers for compatibility with existing tests that inspect
+  // ToolHandler internals; the implementation lives in symbol-resolution.ts.
   private findSymbol(cg: CodeGraph, symbol: string): SymbolMatch | null {
     return resolveSymbol(cg, symbol);
   }
 
-  private findAllSymbols(cg: CodeGraph, symbol: string): SymbolMatches {
+  findAllSymbols(cg: CodeGraph, symbol: string): SymbolMatches {
     return resolveAllSymbols(cg, symbol);
   }
 
