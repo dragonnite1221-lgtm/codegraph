@@ -60,8 +60,8 @@ export class FileLock {
     try {
       fs.writeFileSync(this.lockPath, String(process.pid), { flag: 'wx' });
       this.held = true;
-    } catch (err: any) {
-      if (err.code === 'EEXIST') {
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
         // Race condition: another process grabbed the lock between our check and write
         throw new Error(
           'CodeGraph database is locked by another process. ' +

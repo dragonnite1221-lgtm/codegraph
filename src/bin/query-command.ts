@@ -1,5 +1,6 @@
 import type { Command } from 'commander';
 
+import type { NodeKind } from '../types';
 import { isInitialized } from '../directory';
 
 import { error, info } from './cli-output';
@@ -33,7 +34,7 @@ export function registerQueryCommand(program: Command, deps: CommandDeps): void 
         const limit = parseInt(options.limit || '10', 10);
         const results = cg.searchNodes(search, {
           limit,
-          kinds: options.kind ? [options.kind as any] : undefined,
+          kinds: options.kind ? [options.kind as NodeKind] : undefined,
         });
 
         if (options.json) {
