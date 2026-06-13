@@ -4,9 +4,7 @@
  * Coordinates all reference resolution strategies.
  */
 
-import * as fs from 'fs';
-import * as path from 'path';
-import { Node, UnresolvedReference, Edge } from '../types';
+import { Node, UnresolvedReference } from '../types';
 import { QueryBuilder } from '../db/queries';
 import {
   UnresolvedRef,
@@ -17,99 +15,16 @@ import {
   ImportMapping,
 } from './types';
 import { matchReference } from './name-matcher';
-import { resolveViaImport, extractImportMappings, extractReExports } from './import-resolver';
+import { resolveViaImport } from './import-resolver';
 import { detectFrameworks } from './frameworks';
-import { loadProjectAliases, type AliasMap } from './path-aliases';
-import { logDebug } from '../errors';
+import { type AliasMap } from './path-aliases';
 import type { ReExport } from './types';
+import { createResolutionContext } from './resolution-context';
+import { isBuiltInOrExternal } from './builtin-symbols';
+import { buildResolvedEdges } from './edge-builder';
 
 // Re-export types
 export * from './types';
-
-// Pre-built Sets for O(1) built-in lookups (allocated once, shared across all instances)
-const JS_BUILT_INS = new Set([
-  'console', 'window', 'document', 'global', 'process',
-  'Promise', 'Array', 'Object', 'String', 'Number', 'Boolean',
-  'Date', 'Math', 'JSON', 'RegExp', 'Error', 'Map', 'Set',
-  'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval',
-  'fetch', 'require', 'module', 'exports', '__dirname', '__filename',
-]);
-
-const REACT_HOOKS = new Set([
-  'useState', 'useEffect', 'useContext', 'useReducer', 'useCallback',
-  'useMemo', 'useRef', 'useLayoutEffect', 'useImperativeHandle', 'useDebugValue',
-]);
-
-const PYTHON_BUILT_INS = new Set([
-  'print', 'len', 'range', 'str', 'int', 'float', 'list', 'dict', 'set', 'tuple',
-  'open', 'input', 'type', 'isinstance', 'hasattr', 'getattr', 'setattr',
-  'super', 'self', 'cls', 'None', 'True', 'False',
-]);
-
-const PYTHON_BUILT_IN_TYPES = new Set([
-  'list', 'dict', 'set', 'tuple', 'str', 'int', 'float', 'bool',
-  'bytes', 'bytearray', 'frozenset', 'object', 'super',
-]);
-
-const PYTHON_BUILT_IN_METHODS = new Set([
-  'append', 'extend', 'insert', 'remove', 'pop', 'clear', 'sort', 'reverse', 'copy',
-  'update', 'keys', 'values', 'items', 'get',
-  'add', 'discard', 'union', 'intersection', 'difference',
-  'split', 'join', 'strip', 'lstrip', 'rstrip', 'replace', 'lower', 'upper',
-  'startswith', 'endswith', 'find', 'index', 'count', 'encode', 'decode',
-  'format', 'isdigit', 'isalpha', 'isalnum',
-  'read', 'write', 'readline', 'readlines', 'close', 'flush', 'seek',
-]);
-
-const GO_STDLIB_PACKAGES = new Set([
-  'fmt', 'os', 'io', 'net', 'http', 'log', 'math', 'sort', 'sync',
-  'time', 'path', 'bytes', 'strings', 'strconv', 'errors', 'context',
-  'json', 'xml', 'csv', 'html', 'template', 'regexp', 'reflect',
-  'runtime', 'testing', 'flag', 'bufio', 'crypto', 'encoding',
-  'filepath', 'hash', 'mime', 'rand', 'signal', 'sql', 'syscall',
-  'unicode', 'unsafe', 'atomic', 'binary', 'debug', 'exec', 'heap',
-  'ring', 'scanner', 'tar', 'zip', 'gzip', 'zlib', 'tls', 'url',
-  'user', 'pprof', 'trace', 'ast', 'build', 'parser', 'printer',
-  'token', 'types', 'cgo', 'plugin', 'race', 'ioutil',
-  // Kubernetes-common stdlib aliases
-  'utilruntime', 'utilwait', 'utilnet',
-]);
-
-const GO_BUILT_INS = new Set([
-  'make', 'new', 'len', 'cap', 'append', 'copy', 'delete', 'close',
-  'panic', 'recover', 'print', 'println', 'complex', 'real', 'imag',
-  'error', 'nil', 'true', 'false', 'iota',
-  'int', 'int8', 'int16', 'int32', 'int64',
-  'uint', 'uint8', 'uint16', 'uint32', 'uint64', 'uintptr',
-  'float32', 'float64', 'complex64', 'complex128',
-  'string', 'bool', 'byte', 'rune', 'any',
-]);
-
-const PASCAL_UNIT_PREFIXES = [
-  'System.', 'Winapi.', 'Vcl.', 'Fmx.', 'Data.', 'Datasnap.',
-  'Soap.', 'Xml.', 'Web.', 'REST.', 'FireDAC.', 'IBX.',
-  'IdHTTP', 'IdTCP', 'IdSSL',
-];
-
-const PASCAL_BUILT_INS = new Set([
-  'System', 'SysUtils', 'Classes', 'Types', 'Variants', 'StrUtils',
-  'Math', 'DateUtils', 'IOUtils', 'Generics.Collections', 'Generics.Defaults',
-  'Rtti', 'TypInfo', 'SyncObjs', 'RegularExpressions',
-  'SysInit', 'Windows', 'Messages', 'Graphics', 'Controls', 'Forms',
-  'Dialogs', 'StdCtrls', 'ExtCtrls', 'ComCtrls', 'Menus', 'ActnList',
-  'WriteLn', 'Write', 'ReadLn', 'Read', 'Inc', 'Dec', 'Ord', 'Chr',
-  'Length', 'SetLength', 'High', 'Low', 'Assigned', 'FreeAndNil',
-  'Format', 'IntToStr', 'StrToInt', 'FloatToStr', 'StrToFloat',
-  'Trim', 'UpperCase', 'LowerCase', 'Pos', 'Copy', 'Delete', 'Insert',
-  'Now', 'Date', 'Time', 'DateToStr', 'StrToDate',
-  'Raise', 'Exit', 'Break', 'Continue', 'Abort',
-  'True', 'False', 'nil', 'Self', 'Result',
-  'Create', 'Destroy', 'Free',
-  'TObject', 'TComponent', 'TPersistent', 'TInterfacedObject',
-  'TList', 'TStringList', 'TStrings', 'TStream', 'TMemoryStream', 'TFileStream',
-  'Exception', 'EAbort', 'EConvertError', 'EAccessViolation',
-  'IInterface', 'IUnknown',
-]);
 
 /**
  * Reference Resolver
@@ -139,7 +54,20 @@ export class ReferenceResolver {
   constructor(projectRoot: string, queries: QueryBuilder) {
     this.projectRoot = projectRoot;
     this.queries = queries;
-    this.context = this.createContext();
+    this.context = createResolutionContext({
+      queries: this.queries,
+      projectRoot: this.projectRoot,
+      nodeCache: this.nodeCache,
+      fileCache: this.fileCache,
+      importMappingCache: this.importMappingCache,
+      reExportCache: this.reExportCache,
+      nameCache: this.nameCache,
+      lowerNameCache: this.lowerNameCache,
+      qualifiedNameCache: this.qualifiedNameCache,
+      getKnownFiles: () => this.knownFiles,
+      getAliases: () => this.projectAliases,
+      setAliases: (aliases) => { this.projectAliases = aliases; },
+    });
   }
 
   /**
@@ -184,142 +112,6 @@ export class ReferenceResolver {
     this.cachesWarmed = false;
   }
 
-  /**
-   * Create the resolution context
-   */
-  private createContext(): ResolutionContext {
-    return {
-      getNodesInFile: (filePath: string) => {
-        if (!this.nodeCache.has(filePath)) {
-          this.nodeCache.set(filePath, this.queries.getNodesByFile(filePath));
-        }
-        return this.nodeCache.get(filePath)!;
-      },
-
-      getNodesByName: (name: string) => {
-        const cached = this.nameCache.get(name);
-        if (cached !== undefined) return cached;
-        const result = this.queries.getNodesByName(name);
-        this.nameCache.set(name, result);
-        return result;
-      },
-
-      getNodesByQualifiedName: (qualifiedName: string) => {
-        const cached = this.qualifiedNameCache.get(qualifiedName);
-        if (cached !== undefined) return cached;
-        const result = this.queries.getNodesByQualifiedNameExact(qualifiedName);
-        this.qualifiedNameCache.set(qualifiedName, result);
-        return result;
-      },
-
-      getNodesByKind: (kind: Node['kind']) => {
-        return this.queries.getNodesByKind(kind);
-      },
-
-      fileExists: (filePath: string) => {
-        // Check pre-built known files set first (O(1))
-        if (this.knownFiles) {
-          const normalized = filePath.replace(/\\/g, '/');
-          if (this.knownFiles.has(filePath) || this.knownFiles.has(normalized)) {
-            return true;
-          }
-        }
-        // Fall back to filesystem for files not yet indexed
-        const fullPath = path.join(this.projectRoot, filePath);
-        try {
-          return fs.existsSync(fullPath);
-        } catch (error) {
-          logDebug('Error checking file existence', { filePath, error: String(error) });
-          return false;
-        }
-      },
-
-      readFile: (filePath: string) => {
-        if (this.fileCache.has(filePath)) {
-          return this.fileCache.get(filePath)!;
-        }
-
-        const fullPath = path.join(this.projectRoot, filePath);
-        try {
-          const content = fs.readFileSync(fullPath, 'utf-8');
-          this.fileCache.set(filePath, content);
-          return content;
-        } catch (error) {
-          logDebug('Failed to read file for resolution', { filePath, error: String(error) });
-          this.fileCache.set(filePath, null);
-          return null;
-        }
-      },
-
-      getProjectRoot: () => this.projectRoot,
-
-      getAllFiles: () => {
-        return this.queries.getAllFilePaths();
-      },
-
-      listDirectories: (relativePath: string) => {
-        const target = relativePath === '.' || relativePath === ''
-          ? this.projectRoot
-          : path.join(this.projectRoot, relativePath);
-        try {
-          return fs
-            .readdirSync(target, { withFileTypes: true })
-            .filter((entry) => entry.isDirectory())
-            .map((entry) => entry.name);
-        } catch (error) {
-          logDebug('Failed to list directory for resolution', {
-            relativePath,
-            error: String(error),
-          });
-          return [];
-        }
-      },
-
-      getNodesByLowerName: (lowerName: string) => {
-        const cached = this.lowerNameCache.get(lowerName);
-        if (cached !== undefined) return cached;
-        const result = this.queries.getNodesByLowerName(lowerName);
-        this.lowerNameCache.set(lowerName, result);
-        return result;
-      },
-
-      getImportMappings: (filePath: string, language) => {
-        const cacheKey = filePath;
-        const cached = this.importMappingCache.get(cacheKey);
-        if (cached) return cached;
-
-        const content = this.context.readFile(filePath);
-        if (!content) {
-          this.importMappingCache.set(cacheKey, []);
-          return [];
-        }
-
-        const mappings = extractImportMappings(filePath, content, language);
-        this.importMappingCache.set(cacheKey, mappings);
-        return mappings;
-      },
-
-      getProjectAliases: () => {
-        if (this.projectAliases === undefined) {
-          this.projectAliases = loadProjectAliases(this.projectRoot);
-        }
-        return this.projectAliases;
-      },
-
-      getReExports: (filePath: string, language) => {
-        const cached = this.reExportCache.get(filePath);
-        if (cached) return cached;
-        const content = this.context.readFile(filePath);
-        if (!content) {
-          this.reExportCache.set(filePath, []);
-          return [];
-        }
-        const reExports = extractReExports(content, language);
-        this.reExportCache.set(filePath, reExports);
-        return reExports;
-      },
-    };
-  }
 
   /**
    * Resolve all unresolved references
@@ -449,7 +241,7 @@ export class ReferenceResolver {
    */
   resolveOne(ref: UnresolvedRef): ResolvedRef | null {
     // Skip built-in/external references
-    if (this.isBuiltInOrExternal(ref)) {
+    if (isBuiltInOrExternal(ref, this.knownNames)) {
       return null;
     }
 
@@ -495,49 +287,6 @@ export class ReferenceResolver {
     );
   }
 
-  /**
-   * Create edges from resolved references
-   */
-  createEdges(resolved: ResolvedRef[]): Edge[] {
-    return resolved.map((ref) => {
-      let kind = ref.original.referenceKind;
-
-      // Promote "extends" to "implements" when a class/struct targets an interface
-      if (kind === 'extends') {
-        const targetNode = this.queries.getNodeById(ref.targetNodeId);
-        if (targetNode && (targetNode.kind === 'interface' || targetNode.kind === 'protocol')) {
-          const sourceNode = this.queries.getNodeById(ref.original.fromNodeId);
-          if (sourceNode && sourceNode.kind !== 'interface' && sourceNode.kind !== 'protocol') {
-            kind = 'implements';
-          }
-        }
-      }
-
-      // Promote "calls" to "instantiates" when the resolved target is a
-      // class/struct. Languages without a `new` keyword (Python, Ruby)
-      // express instantiation as `Foo()` — extraction can't tell that
-      // apart from a function call without symbol info, but resolution
-      // can: if `Foo` resolves to a class, the call IS an instantiation.
-      if (kind === 'calls') {
-        const targetNode = this.queries.getNodeById(ref.targetNodeId);
-        if (targetNode && (targetNode.kind === 'class' || targetNode.kind === 'struct')) {
-          kind = 'instantiates';
-        }
-      }
-
-      return {
-        source: ref.original.fromNodeId,
-        target: ref.targetNodeId,
-        kind,
-        line: ref.original.line,
-        column: ref.original.column,
-        metadata: {
-          confidence: ref.confidence,
-          resolvedBy: ref.resolvedBy,
-        },
-      };
-    });
-  }
 
   /**
    * Resolve and persist edges to database
@@ -549,7 +298,7 @@ export class ReferenceResolver {
     const result = this.resolveAll(unresolvedRefs, onProgress);
 
     // Create edges from resolved references
-    const edges = this.createEdges(result.resolved);
+    const edges = buildResolvedEdges(this.queries, result.resolved);
 
     // Insert edges into database
     if (edges.length > 0) {
@@ -599,7 +348,7 @@ export class ReferenceResolver {
       const result = this.resolveAll(batch);
 
       // Persist edges immediately
-      const edges = this.createEdges(result.resolved);
+      const edges = buildResolvedEdges(this.queries, result.resolved);
       if (edges.length > 0) {
         this.queries.insertEdges(edges);
       }
@@ -661,85 +410,6 @@ export class ReferenceResolver {
     return this.frameworks.map((f) => f.name);
   }
 
-  /**
-   * Check if reference is to a built-in or external symbol
-   */
-  private isBuiltInOrExternal(ref: UnresolvedRef): boolean {
-    const name = ref.referenceName;
-    const isJsTs = ref.language === 'typescript' || ref.language === 'javascript'
-      || ref.language === 'tsx' || ref.language === 'jsx';
-
-    // JavaScript/TypeScript built-ins
-    if (isJsTs && JS_BUILT_INS.has(name)) {
-      return true;
-    }
-
-    // Common JS/TS library calls (console.log, Math.floor, JSON.parse)
-    if (isJsTs && (name.startsWith('console.') || name.startsWith('Math.') || name.startsWith('JSON.'))) {
-      return true;
-    }
-
-    // React hooks from React itself
-    if (isJsTs && REACT_HOOKS.has(name)) {
-      return true;
-    }
-
-    // Python built-ins (bare calls only — dotted calls like console.print are method calls)
-    if (ref.language === 'python' && PYTHON_BUILT_INS.has(name)) {
-      return true;
-    }
-
-    // Python built-in method calls (e.g., list.extend, dict.update)
-    if (ref.language === 'python') {
-      const dotIdx = name.indexOf('.');
-      if (dotIdx > 0) {
-        const receiver = name.substring(0, dotIdx);
-        const method = name.substring(dotIdx + 1);
-        // Filter calls on built-in types (list.append, dict.update, etc.)
-        if (PYTHON_BUILT_IN_TYPES.has(receiver)) {
-          return true;
-        }
-        // Filter built-in methods on non-class receivers
-        // (e.g., items.append where items is a local list variable)
-        // But allow if the capitalized receiver matches a known codebase class
-        if (PYTHON_BUILT_IN_METHODS.has(method)) {
-          const capitalized = receiver.charAt(0).toUpperCase() + receiver.slice(1);
-          if (!this.knownNames?.has(capitalized)) {
-            return true;
-          }
-        }
-      }
-      if (PYTHON_BUILT_IN_METHODS.has(name)) {
-        return true;
-      }
-    }
-
-    // Go standard library packages — refs like "fmt.Println", "http.ListenAndServe", etc.
-    if (ref.language === 'go') {
-      const dotIdx = name.indexOf('.');
-      if (dotIdx > 0) {
-        const pkg = name.substring(0, dotIdx);
-        if (GO_STDLIB_PACKAGES.has(pkg)) {
-          return true;
-        }
-      }
-      if (GO_BUILT_INS.has(name)) {
-        return true;
-      }
-    }
-
-    // Pascal/Delphi built-ins and standard library units
-    if (ref.language === 'pascal') {
-      if (PASCAL_UNIT_PREFIXES.some((p) => name.startsWith(p))) {
-        return true;
-      }
-      if (PASCAL_BUILT_INS.has(name)) {
-        return true;
-      }
-    }
-
-    return false;
-  }
 
   /**
    * Get file path from node ID
