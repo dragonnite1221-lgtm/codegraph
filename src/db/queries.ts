@@ -20,11 +20,9 @@ import {
   type EdgeRow,
   type FileRow,
   type NodeRow,
-  type UnresolvedRefRow,
   rowToEdge,
   rowToFileRecord,
   rowToNode,
-  rowToUnresolvedReference,
 } from './row-mappers';
 import {
   runFindNodesByExactName,
@@ -50,11 +48,8 @@ import {
   runGetIncomingEdgesByKinds,
 } from './edge-queries';
 import {
-  runDeleteResolvedReferences,
-  runDeleteSpecificResolvedReferences,
-  runGetUnresolvedReferences,
-  runGetUnresolvedReferencesByFiles,
   type ResolvedReferenceKey,
+  UnresolvedReferenceQueries,
 } from './unresolved-ref-queries';
 import {
   describeNodeRequiredFields,
@@ -70,6 +65,7 @@ export type { FileQueryOptions } from './file-queries';
  */
 export class QueryBuilder {
   private db: SqliteDatabase;
+  private unresolvedRefs: UnresolvedReferenceQueries;
 
   // Node cache for frequently accessed nodes (LRU-style, max 1000 entries)
   private nodeCache = new NodeCache();
@@ -94,20 +90,18 @@ export class QueryBuilder {
     deleteFile?: SqliteStatement;
     getFileByPath?: SqliteStatement;
     getAllFiles?: SqliteStatement;
-    insertUnresolved?: SqliteStatement;
-    deleteUnresolvedByNode?: SqliteStatement;
-    getUnresolvedByName?: SqliteStatement;
     getNodesByName?: SqliteStatement;
     getNodesByQualifiedNameExact?: SqliteStatement;
     getNodesByLowerName?: SqliteStatement;
-    getUnresolvedCount?: SqliteStatement;
-    getUnresolvedBatch?: SqliteStatement;
     getAllFilePaths?: SqliteStatement;
     getAllNodeNames?: SqliteStatement;
   } = {};
 
   constructor(db: SqliteDatabase) {
     this.db = db;
+    this.unresolvedRefs = new UnresolvedReferenceQueries(db, (sql, fn) =>
+      this.withStatement(sql, fn)
+    );
   }
 
   private withStatement<T>(sql: string, fn: (stmt: SqliteStatement) => T): T {
@@ -579,81 +573,42 @@ export class QueryBuilder {
    * Insert an unresolved reference
    */
   insertUnresolvedRef(ref: UnresolvedReference): void {
-    if (!this.stmts.insertUnresolved) {
-      this.stmts.insertUnresolved = this.db.prepare(`
-        INSERT INTO unresolved_refs (from_node_id, reference_name, reference_kind, line, col, candidates, file_path, language)
-        VALUES (@fromNodeId, @referenceName, @referenceKind, @line, @col, @candidates, @filePath, @language)
-      `);
-    }
-
-    this.stmts.insertUnresolved.run({
-      fromNodeId: ref.fromNodeId,
-      referenceName: ref.referenceName,
-      referenceKind: ref.referenceKind,
-      line: ref.line,
-      col: ref.column,
-      candidates: ref.candidates ? JSON.stringify(ref.candidates) : null,
-      filePath: ref.filePath ?? '',
-      language: ref.language ?? 'unknown',
-    });
+    this.unresolvedRefs.insert(ref);
   }
 
   /**
    * Insert multiple unresolved references in a transaction
    */
   insertUnresolvedRefsBatch(refs: UnresolvedReference[]): void {
-    if (refs.length === 0) return;
-    const insert = this.db.transaction(() => {
-      for (const ref of refs) {
-        this.insertUnresolvedRef(ref);
-      }
-    });
-    insert();
+    this.unresolvedRefs.insertBatch(refs);
   }
 
   /**
    * Delete unresolved references from a node
    */
   deleteUnresolvedByNode(nodeId: string): void {
-    if (!this.stmts.deleteUnresolvedByNode) {
-      this.stmts.deleteUnresolvedByNode = this.db.prepare(
-        'DELETE FROM unresolved_refs WHERE from_node_id = ?'
-      );
-    }
-    this.stmts.deleteUnresolvedByNode.run(nodeId);
+    this.unresolvedRefs.deleteByNode(nodeId);
   }
 
   /**
    * Get unresolved references by name (for resolution)
    */
   getUnresolvedByName(name: string): UnresolvedReference[] {
-    if (!this.stmts.getUnresolvedByName) {
-      this.stmts.getUnresolvedByName = this.db.prepare(
-        'SELECT * FROM unresolved_refs WHERE reference_name = ?'
-      );
-    }
-    const rows = this.stmts.getUnresolvedByName.all(name) as UnresolvedRefRow[];
-    return rows.map(rowToUnresolvedReference);
+    return this.unresolvedRefs.getByName(name);
   }
 
   /**
    * Get all unresolved references
    */
   getUnresolvedReferences(): UnresolvedReference[] {
-    return runGetUnresolvedReferences((sql, fn) => this.withStatement(sql, fn));
+    return this.unresolvedRefs.getAll();
   }
 
   /**
    * Get the count of unresolved references without loading them into memory
    */
   getUnresolvedReferencesCount(): number {
-    if (!this.stmts.getUnresolvedCount) {
-      this.stmts.getUnresolvedCount = this.db.prepare(
-        'SELECT COUNT(*) as count FROM unresolved_refs'
-      );
-    }
-    const row = this.stmts.getUnresolvedCount.get() as { count: number };
-    return row.count;
+    return this.unresolvedRefs.count();
   }
 
   /**
@@ -661,13 +616,7 @@ export class QueryBuilder {
    * Used to process references in bounded memory chunks.
    */
   getUnresolvedReferencesBatch(offset: number, limit: number): UnresolvedReference[] {
-    if (!this.stmts.getUnresolvedBatch) {
-      this.stmts.getUnresolvedBatch = this.db.prepare(
-        'SELECT * FROM unresolved_refs ORDER BY id LIMIT ? OFFSET ?'
-      );
-    }
-    const rows = this.stmts.getUnresolvedBatch.all(limit, offset) as UnresolvedRefRow[];
-    return rows.map(rowToUnresolvedReference);
+    return this.unresolvedRefs.getBatch(offset, limit);
   }
 
   /**
@@ -697,24 +646,21 @@ export class QueryBuilder {
    * Uses the idx_unresolved_file_path index for efficient lookup.
    */
   getUnresolvedReferencesByFiles(filePaths: string[]): UnresolvedReference[] {
-    return runGetUnresolvedReferencesByFiles(
-      (sql, fn) => this.withStatement(sql, fn),
-      filePaths
-    );
+    return this.unresolvedRefs.getByFiles(filePaths);
   }
 
   /**
    * Delete all unresolved references (after resolution)
    */
   clearUnresolvedReferences(): void {
-    this.db.exec('DELETE FROM unresolved_refs');
+    this.unresolvedRefs.clear();
   }
 
   /**
    * Delete resolved references by their IDs
    */
   deleteResolvedReferences(fromNodeIds: string[]): void {
-    runDeleteResolvedReferences((sql, fn) => this.withStatement(sql, fn), fromNodeIds);
+    this.unresolvedRefs.deleteResolved(fromNodeIds);
   }
 
   /**
@@ -722,7 +668,7 @@ export class QueryBuilder {
    * More precise than deleteResolvedReferences — only removes refs that were actually resolved.
    */
   deleteSpecificResolvedReferences(refs: ResolvedReferenceKey[]): void {
-    runDeleteSpecificResolvedReferences(this.db, refs);
+    this.unresolvedRefs.deleteSpecificResolved(refs);
   }
 
   // ===========================================================================
