@@ -112,13 +112,16 @@ describe('MCP initialize handshake (issue #172)', () => {
     child = spawnServer(tempDir);
     const events = tagStreams(child);
     sendInitialize(child, tempDir);
-    const response = await waitFor(events, (e) => e.stream === 'stdout', 5000);
+    // Generous wall-clock budget: under a fully parallel suite the worker can
+    // be CPU-starved, and the contract here is "responds without requiring a
+    // .codegraph", not an absolute latency bound (Claude Code allows ~30s).
+    const response = await waitFor(events, (e) => e.stream === 'stdout', 30000);
     const json = JSON.parse(response.text);
     expect(json.jsonrpc).toBe('2.0');
     expect(json.id).toBe(0);
     expect(json.result.protocolVersion).toBeDefined();
     expect(json.result.capabilities.tools).toBeDefined();
-  }, 10000);
+  }, 60000);
 
   it('sends initialize response BEFORE tryInitializeDefault finishes', async () => {
     // Seed a real .codegraph so the server's tryInitializeDefault path runs
@@ -136,15 +139,18 @@ describe('MCP initialize handshake (issue #172)', () => {
     const events = tagStreams(child);
     sendInitialize(child, tempDir);
 
-    const response = await waitFor(events, (e) => e.stream === 'stdout', 10000);
+    // The assertion below is about ORDERING (response.seq < watcherLog.seq),
+    // so a generous wall-clock budget does not weaken the contract — it only
+    // stops CPU-starved parallel runs from flaking before both events arrive.
+    const response = await waitFor(events, (e) => e.stream === 'stdout', 30000);
     const watcherLog = await waitFor(
       events,
       (e) => e.stream === 'stderr' && e.text.includes('File watcher active'),
-      10000,
+      30000,
     );
     expect(response.seq).toBeLessThan(watcherLog.seq);
     const json = JSON.parse(response.text);
     expect(json.id).toBe(0);
     expect(json.result.serverInfo.name).toBe('codegraph');
-  }, 20000);
+  }, 60000);
 });
