@@ -44,6 +44,12 @@ import {
   type FileQueryOptions,
 } from './file-queries';
 import {
+  hasOutgoingEdgeFilters,
+  runFindEdgesBetweenNodes,
+  runGetFilteredOutgoingEdges,
+  runGetIncomingEdgesByKinds,
+} from './edge-queries';
+import {
   runDeleteResolvedReferences,
   runDeleteSpecificResolvedReferences,
   runGetUnresolvedReferences,
@@ -497,22 +503,13 @@ export class QueryBuilder {
    * Get outgoing edges from a node
    */
   getOutgoingEdges(sourceId: string, kinds?: EdgeKind[], provenance?: string): Edge[] {
-    if ((kinds && kinds.length > 0) || provenance) {
-      let sql = 'SELECT * FROM edges WHERE source = ?';
-      const params: (string | number)[] = [sourceId];
-
-      if (kinds && kinds.length > 0) {
-        sql += ` AND kind IN (${kinds.map(() => '?').join(',')})`;
-        params.push(...kinds);
-      }
-
-      if (provenance) {
-        sql += ' AND provenance = ?';
-        params.push(provenance);
-      }
-
-      const rows = this.withStatement(sql, (stmt) => stmt.all(...params) as EdgeRow[]);
-      return rows.map(rowToEdge);
+    if (hasOutgoingEdgeFilters(kinds, provenance)) {
+      return runGetFilteredOutgoingEdges(
+        (sql, fn) => this.withStatement(sql, fn),
+        sourceId,
+        kinds,
+        provenance
+      );
     }
 
     if (!this.stmts.getEdgesBySource) {
@@ -527,9 +524,11 @@ export class QueryBuilder {
    */
   getIncomingEdges(targetId: string, kinds?: EdgeKind[]): Edge[] {
     if (kinds && kinds.length > 0) {
-      const sql = `SELECT * FROM edges WHERE target = ? AND kind IN (${kinds.map(() => '?').join(',')})`;
-      const rows = this.withStatement(sql, (stmt) => stmt.all(targetId, ...kinds) as EdgeRow[]);
-      return rows.map(rowToEdge);
+      return runGetIncomingEdgesByKinds(
+        (sql, fn) => this.withStatement(sql, fn),
+        targetId,
+        kinds
+      );
     }
 
     if (!this.stmts.getEdgesByTarget) {
@@ -544,19 +543,7 @@ export class QueryBuilder {
    * Useful for recovering inter-node connectivity after BFS.
    */
   findEdgesBetweenNodes(nodeIds: string[], kinds?: EdgeKind[]): Edge[] {
-    if (nodeIds.length === 0) return [];
-
-    const idsJson = JSON.stringify(nodeIds);
-    let sql = `SELECT * FROM edges WHERE source IN (SELECT value FROM json_each(?)) AND target IN (SELECT value FROM json_each(?))`;
-    const params: string[] = [idsJson, idsJson];
-
-    if (kinds && kinds.length > 0) {
-      sql += ` AND kind IN (${kinds.map(() => '?').join(',')})`;
-      params.push(...kinds);
-    }
-
-    const rows = this.withStatement(sql, (stmt) => stmt.all(...params) as EdgeRow[]);
-    return rows.map(rowToEdge);
+    return runFindEdgesBetweenNodes((sql, fn) => this.withStatement(sql, fn), nodeIds, kinds);
   }
 
   // ===========================================================================
@@ -740,7 +727,7 @@ export class QueryBuilder {
   getUnresolvedReferencesBatch(offset: number, limit: number): UnresolvedReference[] {
     if (!this.stmts.getUnresolvedBatch) {
       this.stmts.getUnresolvedBatch = this.db.prepare(
-        'SELECT * FROM unresolved_refs LIMIT ? OFFSET ?'
+        'SELECT * FROM unresolved_refs ORDER BY id LIMIT ? OFFSET ?'
       );
     }
     const rows = this.stmts.getUnresolvedBatch.all(limit, offset) as UnresolvedRefRow[];

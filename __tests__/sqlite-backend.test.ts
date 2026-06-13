@@ -266,6 +266,9 @@ describe('QueryBuilder unresolved reference queries', () => {
       expect(
         queries.getUnresolvedReferencesByFiles(['src/b.ts']).map(ref => ref.referenceName)
       ).toEqual(['targetB', 'targetC']);
+      expect(queries.getUnresolvedReferencesBatch(1, 1).map(ref => ref.referenceName)).toEqual([
+        'targetB',
+      ]);
 
       queries.deleteSpecificResolvedReferences([
         { fromNodeId: 'from-b', referenceName: 'targetB', referenceKind: 'calls' },
@@ -279,6 +282,66 @@ describe('QueryBuilder unresolved reference queries', () => {
       expect(queries.getUnresolvedReferences().map(ref => ref.referenceName)).toEqual([
         'targetC',
       ]);
+    } finally {
+      conn.close();
+    }
+  });
+});
+
+describe('QueryBuilder edge queries', () => {
+  let dir: string;
+
+  function nodeRecord(id: string): Node {
+    return {
+      id,
+      kind: 'function',
+      name: id,
+      qualifiedName: id,
+      filePath: `${id}.ts`,
+      language: 'typescript',
+      startLine: 1,
+      endLine: 1,
+      startColumn: 0,
+      endColumn: 1,
+      updatedAt: 1,
+    };
+  }
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-edge-query-'));
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(dir)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('filters outgoing and incoming edges and recovers edges inside a node set', () => {
+    const dbPath = path.join(dir, 'test.db');
+    const conn = DatabaseConnection.initialize(dbPath);
+    const queries = new QueryBuilder(conn.getDb());
+
+    queries.insertNodes([nodeRecord('a'), nodeRecord('b'), nodeRecord('c')]);
+    queries.insertEdges([
+      { source: 'a', target: 'b', kind: 'calls', provenance: 'tree-sitter' },
+      { source: 'a', target: 'c', kind: 'imports', provenance: 'scip' },
+      { source: 'b', target: 'a', kind: 'references' },
+    ]);
+
+    try {
+      expect(
+        queries.getOutgoingEdges('a', ['calls'], 'tree-sitter').map(edge => edge.target)
+      ).toEqual(['b']);
+      expect(queries.getIncomingEdges('a', ['references']).map(edge => edge.source)).toEqual([
+        'b',
+      ]);
+      expect(
+        queries.findEdgesBetweenNodes(['a', 'b'], ['calls']).map(edge => [
+          edge.source,
+          edge.target,
+        ])
+      ).toEqual([['a', 'b']]);
     } finally {
       conn.close();
     }
