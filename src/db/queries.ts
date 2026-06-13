@@ -56,6 +56,11 @@ import {
   runGetUnresolvedReferencesByFiles,
   type ResolvedReferenceKey,
 } from './unresolved-ref-queries';
+import {
+  describeNodeRequiredFields,
+  isNodePersistable,
+  nodeToStatementParams,
+} from './node-params';
 
 export type { FileQueryOptions } from './file-queries';
 
@@ -141,40 +146,13 @@ export class QueryBuilder {
     }
 
     // Validate required fields to prevent SQLite bind errors
-    if (!node.id || !node.kind || !node.name || !node.filePath || !node.language) {
-      console.error('[CodeGraph] Skipping node with missing required fields:', {
-        id: node.id,
-        kind: node.kind,
-        name: node.name,
-        filePath: node.filePath,
-        language: node.language,
-      });
+    if (!isNodePersistable(node)) {
+      console.error('[CodeGraph] Skipping node with missing required fields:', describeNodeRequiredFields(node));
       return;
     }
 
     try {
-      this.stmts.insertNode.run({
-        id: node.id,
-        kind: node.kind,
-        name: node.name,
-        qualifiedName: node.qualifiedName ?? node.name,
-        filePath: node.filePath,
-        language: node.language,
-        startLine: node.startLine ?? 0,
-        endLine: node.endLine ?? 0,
-        startColumn: node.startColumn ?? 0,
-        endColumn: node.endColumn ?? 0,
-        docstring: node.docstring ?? null,
-        signature: node.signature ?? null,
-        visibility: node.visibility ?? null,
-        isExported: node.isExported ? 1 : 0,
-        isAsync: node.isAsync ? 1 : 0,
-        isStatic: node.isStatic ? 1 : 0,
-        isAbstract: node.isAbstract ? 1 : 0,
-        decorators: node.decorators ? JSON.stringify(node.decorators) : null,
-        typeParameters: node.typeParameters ? JSON.stringify(node.typeParameters) : null,
-        updatedAt: node.updatedAt ?? Date.now(),
-      });
+      this.stmts.insertNode.run(nodeToStatementParams(node));
       this.nodeCache.delete(node.id);
     } catch (error) {
       throw error;
@@ -226,33 +204,12 @@ export class QueryBuilder {
     this.nodeCache.delete(node.id);
 
     // Validate required fields
-    if (!node.id || !node.kind || !node.name || !node.filePath || !node.language) {
+    if (!isNodePersistable(node)) {
       console.error('[CodeGraph] Skipping node update with missing required fields:', node.id);
       return;
     }
 
-    this.stmts.updateNode.run({
-      id: node.id,
-      kind: node.kind,
-      name: node.name,
-      qualifiedName: node.qualifiedName ?? node.name,
-      filePath: node.filePath,
-      language: node.language,
-      startLine: node.startLine ?? 0,
-      endLine: node.endLine ?? 0,
-      startColumn: node.startColumn ?? 0,
-      endColumn: node.endColumn ?? 0,
-      docstring: node.docstring ?? null,
-      signature: node.signature ?? null,
-      visibility: node.visibility ?? null,
-      isExported: node.isExported ? 1 : 0,
-      isAsync: node.isAsync ? 1 : 0,
-      isStatic: node.isStatic ? 1 : 0,
-      isAbstract: node.isAbstract ? 1 : 0,
-      decorators: node.decorators ? JSON.stringify(node.decorators) : null,
-      typeParameters: node.typeParameters ? JSON.stringify(node.typeParameters) : null,
-      updatedAt: node.updatedAt ?? Date.now(),
-    });
+    this.stmts.updateNode.run(nodeToStatementParams(node));
   }
 
   /**
