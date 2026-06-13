@@ -48,6 +48,7 @@ import { ContextBuilder, createContextBuilder } from './context';
 import { Mutex, FileLock } from './utils';
 import { FileWatcher, WatchOptions } from './sync';
 import { prepareNewProject, openExistingProject } from './lifecycle';
+import { runIndexAll, runIndexFiles, runSync } from './indexing-operations';
 
 // Re-export types for consumers
 export * from './types';
@@ -253,6 +254,16 @@ export class CodeGraph {
     this.db.close();
   }
 
+  private indexingDeps() {
+    return {
+      indexMutex: this.indexMutex,
+      fileLock: this.fileLock,
+      orchestrator: this.orchestrator,
+      queries: this.queries,
+      resolver: this.resolver,
+    };
+  }
+
   // ===========================================================================
   // Configuration
   // ===========================================================================
@@ -296,40 +307,7 @@ export class CodeGraph {
    * Uses a mutex to prevent concurrent indexing operations.
    */
   async indexAll(options: IndexOptions = {}): Promise<IndexResult> {
-    return this.indexMutex.withLock(async () => {
-      try {
-        this.fileLock.acquire();
-      } catch {
-        return { success: false, filesIndexed: 0, filesSkipped: 0, filesErrored: 0, nodesCreated: 0, edgesCreated: 0, errors: [{ message: 'Could not acquire file lock - another process may be indexing', severity: 'error' as const }], durationMs: 0 };
-      }
-      try {
-        const result = await this.orchestrator.indexAll(options.onProgress, options.signal, options.verbose);
-
-        // Resolve references to create call/import/extends edges
-        if (result.success && result.filesIndexed > 0) {
-          // Get count without loading all refs into memory
-          const unresolvedCount = this.queries.getUnresolvedReferencesCount();
-
-          options.onProgress?.({
-            phase: 'resolving',
-            current: 0,
-            total: unresolvedCount,
-          });
-
-          await this.resolveReferencesBatched((current, total) => {
-            options.onProgress?.({
-              phase: 'resolving',
-              current,
-              total,
-            });
-          });
-        }
-
-        return result;
-      } finally {
-        this.fileLock.release();
-      }
-    });
+    return runIndexAll(this.indexingDeps(), options);
   }
 
   /**
@@ -338,18 +316,7 @@ export class CodeGraph {
    * Uses a mutex to prevent concurrent indexing operations.
    */
   async indexFiles(filePaths: string[]): Promise<IndexResult> {
-    return this.indexMutex.withLock(async () => {
-      try {
-        this.fileLock.acquire();
-      } catch {
-        return { success: false, filesIndexed: 0, filesSkipped: 0, filesErrored: 0, nodesCreated: 0, edgesCreated: 0, errors: [{ message: 'Could not acquire file lock - another process may be indexing', severity: 'error' as const }], durationMs: 0 };
-      }
-      try {
-        return this.orchestrator.indexFiles(filePaths);
-      } finally {
-        this.fileLock.release();
-      }
-    });
+    return runIndexFiles(this.indexingDeps(), filePaths);
   }
 
   /**
@@ -358,59 +325,7 @@ export class CodeGraph {
    * Uses a mutex to prevent concurrent indexing operations.
    */
   async sync(options: IndexOptions = {}): Promise<SyncResult> {
-    return this.indexMutex.withLock(async () => {
-      try {
-        this.fileLock.acquire();
-      } catch {
-        return { filesChecked: 0, filesAdded: 0, filesModified: 0, filesRemoved: 0, nodesUpdated: 0, durationMs: 0 };
-      }
-      try {
-        const result = await this.orchestrator.sync(options.onProgress);
-
-        // Resolve references if files were updated
-        if (result.filesAdded > 0 || result.filesModified > 0) {
-          if (result.changedFilePaths) {
-            // Scope resolution to changed files (git fast path — bounded set)
-            const unresolvedRefs = this.queries.getUnresolvedReferencesByFiles(result.changedFilePaths);
-
-            options.onProgress?.({
-              phase: 'resolving',
-              current: 0,
-              total: unresolvedRefs.length,
-            });
-
-            this.resolver.resolveAndPersist(unresolvedRefs, (current, total) => {
-              options.onProgress?.({
-                phase: 'resolving',
-                current,
-                total,
-              });
-            });
-          } else {
-            // No git info — use batched resolution to avoid OOM
-            const unresolvedCount = this.queries.getUnresolvedReferencesCount();
-
-            options.onProgress?.({
-              phase: 'resolving',
-              current: 0,
-              total: unresolvedCount,
-            });
-
-            await this.resolveReferencesBatched((current, total) => {
-              options.onProgress?.({
-                phase: 'resolving',
-                current,
-                total,
-              });
-            });
-          }
-        }
-
-        return result;
-      } finally {
-        this.fileLock.release();
-      }
-    });
+    return runSync(this.indexingDeps(), options);
   }
 
   /**
