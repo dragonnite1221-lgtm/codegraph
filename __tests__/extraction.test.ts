@@ -3102,6 +3102,8 @@ describe('Git Submodules', () => {
     git(libDir, 'init', '-q');
     git(libDir, 'config', 'user.email', 'test@test.com');
     git(libDir, 'config', 'user.name', 'Test');
+    // Host-level commit signing would break commits in this throwaway repo.
+    git(libDir, 'config', 'commit.gpgsign', 'false');
     fs.writeFileSync(path.join(libDir, 'lib.ts'), 'export const fromSubmodule = 1;');
     git(libDir, 'add', '-A');
     git(libDir, 'commit', '-q', '-m', 'lib init');
@@ -3112,6 +3114,7 @@ describe('Git Submodules', () => {
     git(mainDir, 'init', '-q');
     git(mainDir, 'config', 'user.email', 'test@test.com');
     git(mainDir, 'config', 'user.name', 'Test');
+    git(mainDir, 'config', 'commit.gpgsign', 'false');
     fs.writeFileSync(path.join(mainDir, 'app.ts'), 'export const app = 1;');
     git(mainDir, 'add', '-A');
     git(mainDir, 'commit', '-q', '-m', 'app init');

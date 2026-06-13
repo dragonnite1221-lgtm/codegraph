@@ -163,10 +163,14 @@ describe('Sync Module', () => {
     beforeEach(async () => {
       testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-git-sync-'));
 
-      // Initialize a git repo with an initial commit
+      // Initialize a git repo with an initial commit.
+      // commit.gpgsign must be off: a host-level signing setup (gpg/ssh
+      // signing servers) would otherwise make commits in this throwaway
+      // repo fail or hang.
       git('init');
       git('config', 'user.email', 'test@test.com');
       git('config', 'user.name', 'Test');
+      git('config', 'commit.gpgsign', 'false');
 
       const srcDir = path.join(testDir, 'src');
       fs.mkdirSync(srcDir);
