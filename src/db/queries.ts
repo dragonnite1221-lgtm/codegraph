@@ -61,6 +61,7 @@ import {
   isNodePersistable,
   nodeToStatementParams,
 } from './node-params';
+import { NodeCache } from './node-cache';
 
 export type { FileQueryOptions } from './file-queries';
 
@@ -71,8 +72,7 @@ export class QueryBuilder {
   private db: SqliteDatabase;
 
   // Node cache for frequently accessed nodes (LRU-style, max 1000 entries)
-  private nodeCache: Map<string, Node> = new Map();
-  private readonly maxCacheSize = 1000;
+  private nodeCache = new NodeCache();
 
   // Prepared statements (lazily initialized)
   private stmts: {
@@ -232,11 +232,7 @@ export class QueryBuilder {
       this.stmts.deleteNodesByFile = this.db.prepare('DELETE FROM nodes WHERE file_path = ?');
     }
     // Invalidate cache for nodes in this file
-    for (const [id, node] of this.nodeCache) {
-      if (node.filePath === filePath) {
-        this.nodeCache.delete(id);
-      }
-    }
+    this.nodeCache.deleteByFile(filePath);
     this.stmts.deleteNodesByFile.run(filePath);
   }
 
@@ -245,11 +241,8 @@ export class QueryBuilder {
    */
   getNodeById(id: string): Node | null {
     // Check cache first
-    if (this.nodeCache.has(id)) {
-      const cached = this.nodeCache.get(id)!;
-      // Move to end to implement LRU (delete and re-add)
-      this.nodeCache.delete(id);
-      this.nodeCache.set(id, cached);
+    const cached = this.nodeCache.get(id);
+    if (cached) {
       return cached;
     }
 
@@ -262,22 +255,8 @@ export class QueryBuilder {
     }
 
     const node = rowToNode(row);
-    this.cacheNode(node);
+    this.nodeCache.set(node);
     return node;
-  }
-
-  /**
-   * Add a node to the cache, evicting oldest if needed
-   */
-  private cacheNode(node: Node): void {
-    if (this.nodeCache.size >= this.maxCacheSize) {
-      // Evict oldest (first) entry
-      const firstKey = this.nodeCache.keys().next().value;
-      if (firstKey) {
-        this.nodeCache.delete(firstKey);
-      }
-    }
-    this.nodeCache.set(node.id, node);
   }
 
   /**
