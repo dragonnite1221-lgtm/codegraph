@@ -26,6 +26,8 @@ import {
 } from './file-scanner';
 import { storeExtractionResult } from './result-storage';
 import { ParseWorkerPool } from './parse-worker-pool';
+import { retryWasmMemoryFailures, type IndexCounters } from './bulk-retry';
+import { shouldStoreParseResult, hasFatalExtractionError } from './parse-result-predicates';
 import { getChangedFilesForIndex, runSync } from './sync-operations';
 
 /**
@@ -85,14 +87,6 @@ export interface SyncResult {
   nodesUpdated: number;
   durationMs: number;
   changedFilePaths?: string[];
-}
-
-function shouldStoreParseResult(result: ExtractionResult): boolean {
-  return result.nodes.length > 0 || result.errors.length === 0;
-}
-
-function hasFatalExtractionError(result: ExtractionResult): boolean {
-  return result.errors.some((error) => error.severity === 'error');
 }
 
 /**
@@ -423,120 +417,20 @@ export class ExtractionOrchestrator {
     // so synchronous work here blocks the animation from rendering.
     await new Promise(resolve => setImmediate(resolve));
 
-    // Retry pass: files that failed due to WASM memory corruption may succeed
-    // on a fresh worker with a clean heap. Recycle before each attempt so
-    // every file gets the absolute cleanest WASM state possible.
-    const retryableErrors = errors.filter(
-      (e) => e.code === 'parse_error' && e.filePath &&
-        (e.message.includes('Worker exited') || e.message.includes('memory access out of bounds'))
-    );
-
-    if (retryableErrors.length > 0 && WorkerClass) {
-      log(`Retrying ${retryableErrors.length} files that failed due to WASM memory errors...`);
-
-      const stillFailing: typeof retryableErrors = [];
-
-      for (const errEntry of retryableErrors) {
-        const filePath = errEntry.filePath!;
-        if (signal?.aborted) break;
-
-        // Fresh worker for every retry — maximum WASM headroom
-        pool.recycle();
-
-        const fullPath = validatePathWithinRoot(this.rootDir, filePath);
-        if (!fullPath) continue;
-
-        let content: string;
-        try {
-          content = await fsp.readFile(fullPath, 'utf-8');
-        } catch {
-          continue;
-        }
-
-        let result: ExtractionResult;
-        try {
-          result = await pool.requestParse(filePath, content);
-        } catch {
-          stillFailing.push(errEntry);
-          continue;
-        }
-
-        if (shouldStoreParseResult(result)) {
-          const language = detectLanguage(filePath, content);
-          const stats = await fsp.stat(fullPath);
-          this.storeExtractionResult(filePath, content, language, stats, result);
-
-          const idx = errors.indexOf(errEntry);
-          if (idx >= 0) errors.splice(idx, 1);
-          filesErrored--;
-          totalNodes += result.nodes.length;
-          totalEdges += result.edges.length;
-          if (result.nodes.length > 0) {
-            filesIndexed++;
-          } else {
-            filesSkipped++;
-          }
-          log(`Retry OK: ${filePath} (${result.nodes.length} nodes)`);
-        }
-      }
-
-      // Last resort: for files that still crash on a clean worker, strip
-      // comment-only lines to reduce WASM memory pressure. Many compiler
-      // test files are 90%+ comments (CHECK directives) that don't contribute
-      // code nodes but consume parser memory.
-      if (stillFailing.length > 0) {
-        log(`${stillFailing.length} files still failing — retrying with comments stripped...`);
-
-        for (const errEntry of stillFailing) {
-          const filePath = errEntry.filePath!;
-          if (signal?.aborted) break;
-
-          pool.recycle();
-
-          const fullPath = validatePathWithinRoot(this.rootDir, filePath);
-          if (!fullPath) continue;
-
-          let fullContent: string;
-          try {
-            fullContent = await fsp.readFile(fullPath, 'utf-8');
-          } catch {
-            continue;
-          }
-
-          // Strip lines that are entirely comments (preserving line numbers
-          // by replacing with empty lines so node positions stay correct)
-          const stripped = fullContent
-            .split('\n')
-            .map(line => /^\s*\/\//.test(line) ? '' : line)
-            .join('\n');
-
-          let result: ExtractionResult;
-          try {
-            result = await pool.requestParse(filePath, stripped);
-          } catch {
-            continue;
-          }
-
-          if (shouldStoreParseResult(result)) {
-            const language = detectLanguage(filePath, fullContent);
-            const stats = await fsp.stat(fullPath);
-            this.storeExtractionResult(filePath, fullContent, language, stats, result);
-
-            const idx = errors.indexOf(errEntry);
-            if (idx >= 0) errors.splice(idx, 1);
-            filesErrored--;
-            totalNodes += result.nodes.length;
-            totalEdges += result.edges.length;
-            if (result.nodes.length > 0) {
-              filesIndexed++;
-            } else {
-              filesSkipped++;
-            }
-            log(`Retry (stripped) OK: ${filePath} (${result.nodes.length} nodes)`);
-          }
-        }
-      }
-    }
+    // Retry WASM-memory failures (fresh worker, then comment-stripped fallback).
+    const counters: IndexCounters = { filesIndexed, filesSkipped, filesErrored, totalNodes, totalEdges };
+    await retryWasmMemoryFailures({
+      pool,
+      hasWorker: WorkerClass !== null,
+      errors,
+      counters,
+      rootDir: this.rootDir,
+      signal,
+      log,
+      store: (filePath, content, language, stats, result) =>
+        this.storeExtractionResult(filePath, content, language, stats, result),
+    });
+    ({ filesIndexed, filesSkipped, filesErrored, totalNodes, totalEdges } = counters);
 
     // Shut down the parse worker and clear any pending timers
     pool.dispose();
