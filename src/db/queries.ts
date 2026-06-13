@@ -19,18 +19,9 @@ import {
 import {
   type EdgeRow,
   type FileRow,
-  type NodeRow,
-  type UnresolvedRefRow,
   rowToEdge,
   rowToFileRecord,
-  rowToNode,
-  rowToUnresolvedReference,
 } from './row-mappers';
-import {
-  runFindNodesByExactName,
-  runFindNodesByNameSubstring,
-  runSearchNodes,
-} from './search-queries';
 import {
   runGetAllMetadata,
   runGetMetadata,
@@ -50,18 +41,11 @@ import {
   runGetIncomingEdgesByKinds,
 } from './edge-queries';
 import {
-  runDeleteResolvedReferences,
-  runDeleteSpecificResolvedReferences,
-  runGetUnresolvedReferences,
-  runGetUnresolvedReferencesByFiles,
   type ResolvedReferenceKey,
+  UnresolvedReferenceQueries,
 } from './unresolved-ref-queries';
-import {
-  describeNodeRequiredFields,
-  isNodePersistable,
-  nodeToStatementParams,
-} from './node-params';
 import { NodeCache } from './node-cache';
+import { NodeQueries } from './node-queries';
 
 export type { FileQueryOptions } from './file-queries';
 
@@ -70,19 +54,14 @@ export type { FileQueryOptions } from './file-queries';
  */
 export class QueryBuilder {
   private db: SqliteDatabase;
+  private unresolvedRefs: UnresolvedReferenceQueries;
+  private nodeQueries: NodeQueries;
 
   // Node cache for frequently accessed nodes (LRU-style, max 1000 entries)
   private nodeCache = new NodeCache();
 
   // Prepared statements (lazily initialized)
   private stmts: {
-    insertNode?: SqliteStatement;
-    updateNode?: SqliteStatement;
-    deleteNode?: SqliteStatement;
-    deleteNodesByFile?: SqliteStatement;
-    getNodeById?: SqliteStatement;
-    getNodesByFile?: SqliteStatement;
-    getNodesByKind?: SqliteStatement;
     insertEdge?: SqliteStatement;
     upsertFile?: SqliteStatement;
     deleteEdgesBySource?: SqliteStatement;
@@ -94,20 +73,19 @@ export class QueryBuilder {
     deleteFile?: SqliteStatement;
     getFileByPath?: SqliteStatement;
     getAllFiles?: SqliteStatement;
-    insertUnresolved?: SqliteStatement;
-    deleteUnresolvedByNode?: SqliteStatement;
-    getUnresolvedByName?: SqliteStatement;
-    getNodesByName?: SqliteStatement;
-    getNodesByQualifiedNameExact?: SqliteStatement;
-    getNodesByLowerName?: SqliteStatement;
-    getUnresolvedCount?: SqliteStatement;
-    getUnresolvedBatch?: SqliteStatement;
     getAllFilePaths?: SqliteStatement;
-    getAllNodeNames?: SqliteStatement;
   } = {};
 
   constructor(db: SqliteDatabase) {
     this.db = db;
+    this.unresolvedRefs = new UnresolvedReferenceQueries(db, (sql, fn) =>
+      this.withStatement(sql, fn)
+    );
+    this.nodeQueries = new NodeQueries(
+      db,
+      (sql, fn) => this.withStatement(sql, fn),
+      this.nodeCache
+    );
   }
 
   private withStatement<T>(sql: string, fn: (stmt: SqliteStatement) => T): T {
@@ -120,272 +98,74 @@ export class QueryBuilder {
   }
 
   // ===========================================================================
-  // Node Operations
+  // Node Operations (delegated to NodeQueries)
   // ===========================================================================
 
-  /**
-   * Insert a new node
-   */
   insertNode(node: Node): void {
-    if (!this.stmts.insertNode) {
-      this.stmts.insertNode = this.db.prepare(`
-        INSERT OR REPLACE INTO nodes (
-          id, kind, name, qualified_name, file_path, language,
-          start_line, end_line, start_column, end_column,
-          docstring, signature, visibility,
-          is_exported, is_async, is_static, is_abstract,
-          decorators, type_parameters, updated_at
-        ) VALUES (
-          @id, @kind, @name, @qualifiedName, @filePath, @language,
-          @startLine, @endLine, @startColumn, @endColumn,
-          @docstring, @signature, @visibility,
-          @isExported, @isAsync, @isStatic, @isAbstract,
-          @decorators, @typeParameters, @updatedAt
-        )
-      `);
-    }
-
-    // Validate required fields to prevent SQLite bind errors
-    if (!isNodePersistable(node)) {
-      console.error('[CodeGraph] Skipping node with missing required fields:', describeNodeRequiredFields(node));
-      return;
-    }
-
-    try {
-      this.stmts.insertNode.run(nodeToStatementParams(node));
-      this.nodeCache.delete(node.id);
-    } catch (error) {
-      throw error;
-    }
+    this.nodeQueries.insertNode(node);
   }
 
-  /**
-   * Insert multiple nodes in a transaction
-   */
   insertNodes(nodes: Node[]): void {
-    this.db.transaction(() => {
-      for (const node of nodes) {
-        this.insertNode(node);
-      }
-    })();
+    this.nodeQueries.insertNodes(nodes);
   }
 
-  /**
-   * Update an existing node
-   */
   updateNode(node: Node): void {
-    if (!this.stmts.updateNode) {
-      this.stmts.updateNode = this.db.prepare(`
-        UPDATE nodes SET
-          kind = @kind,
-          name = @name,
-          qualified_name = @qualifiedName,
-          file_path = @filePath,
-          language = @language,
-          start_line = @startLine,
-          end_line = @endLine,
-          start_column = @startColumn,
-          end_column = @endColumn,
-          docstring = @docstring,
-          signature = @signature,
-          visibility = @visibility,
-          is_exported = @isExported,
-          is_async = @isAsync,
-          is_static = @isStatic,
-          is_abstract = @isAbstract,
-          decorators = @decorators,
-          type_parameters = @typeParameters,
-          updated_at = @updatedAt
-        WHERE id = @id
-      `);
-    }
-
-    // Invalidate cache before update
-    this.nodeCache.delete(node.id);
-
-    // Validate required fields
-    if (!isNodePersistable(node)) {
-      console.error('[CodeGraph] Skipping node update with missing required fields:', node.id);
-      return;
-    }
-
-    this.stmts.updateNode.run(nodeToStatementParams(node));
+    this.nodeQueries.updateNode(node);
   }
 
-  /**
-   * Delete a node by ID
-   */
   deleteNode(id: string): void {
-    if (!this.stmts.deleteNode) {
-      this.stmts.deleteNode = this.db.prepare('DELETE FROM nodes WHERE id = ?');
-    }
-    // Invalidate cache
-    this.nodeCache.delete(id);
-    this.stmts.deleteNode.run(id);
+    this.nodeQueries.deleteNode(id);
   }
 
-  /**
-   * Delete all nodes for a file
-   */
   deleteNodesByFile(filePath: string): void {
-    if (!this.stmts.deleteNodesByFile) {
-      this.stmts.deleteNodesByFile = this.db.prepare('DELETE FROM nodes WHERE file_path = ?');
-    }
-    // Invalidate cache for nodes in this file
-    this.nodeCache.deleteByFile(filePath);
-    this.stmts.deleteNodesByFile.run(filePath);
+    this.nodeQueries.deleteNodesByFile(filePath);
   }
 
-  /**
-   * Get a node by ID
-   */
   getNodeById(id: string): Node | null {
-    // Check cache first
-    const cached = this.nodeCache.get(id);
-    if (cached) {
-      return cached;
-    }
-
-    if (!this.stmts.getNodeById) {
-      this.stmts.getNodeById = this.db.prepare('SELECT * FROM nodes WHERE id = ?');
-    }
-    const row = this.stmts.getNodeById.get(id) as NodeRow | undefined;
-    if (!row) {
-      return null;
-    }
-
-    const node = rowToNode(row);
-    this.nodeCache.set(node);
-    return node;
+    return this.nodeQueries.getNodeById(id);
   }
 
-  /**
-   * Clear the node cache
-   */
   clearCache(): void {
-    this.nodeCache.clear();
+    this.nodeQueries.clearCache();
   }
 
-  /**
-   * Get all nodes in a file
-   */
   getNodesByFile(filePath: string): Node[] {
-    if (!this.stmts.getNodesByFile) {
-      this.stmts.getNodesByFile = this.db.prepare(
-        'SELECT * FROM nodes WHERE file_path = ? ORDER BY start_line'
-      );
-    }
-    const rows = this.stmts.getNodesByFile.all(filePath) as NodeRow[];
-    return rows.map(rowToNode);
+    return this.nodeQueries.getNodesByFile(filePath);
   }
 
-  /**
-   * Get all nodes of a specific kind
-   */
   getNodesByKind(kind: NodeKind): Node[] {
-    if (!this.stmts.getNodesByKind) {
-      this.stmts.getNodesByKind = this.db.prepare('SELECT * FROM nodes WHERE kind = ?');
-    }
-    const rows = this.stmts.getNodesByKind.all(kind) as NodeRow[];
-    return rows.map(rowToNode);
+    return this.nodeQueries.getNodesByKind(kind);
   }
 
-  /**
-   * Get all nodes in the database
-   */
   getAllNodes(): Node[] {
-    const rows = this.withStatement('SELECT * FROM nodes', (stmt) => stmt.all() as NodeRow[]);
-    return rows.map(rowToNode);
+    return this.nodeQueries.getAllNodes();
   }
 
-  /**
-   * Get nodes by exact name match (uses idx_nodes_name index)
-   */
   getNodesByName(name: string): Node[] {
-    if (!this.stmts.getNodesByName) {
-      this.stmts.getNodesByName = this.db.prepare('SELECT * FROM nodes WHERE name = ?');
-    }
-    const rows = this.stmts.getNodesByName.all(name) as NodeRow[];
-    return rows.map(rowToNode);
+    return this.nodeQueries.getNodesByName(name);
   }
 
-  /**
-   * Get nodes by exact qualified name match (uses idx_nodes_qualified_name index)
-   */
   getNodesByQualifiedNameExact(qualifiedName: string): Node[] {
-    if (!this.stmts.getNodesByQualifiedNameExact) {
-      this.stmts.getNodesByQualifiedNameExact = this.db.prepare(
-        'SELECT * FROM nodes WHERE qualified_name = ?'
-      );
-    }
-    const rows = this.stmts.getNodesByQualifiedNameExact.all(qualifiedName) as NodeRow[];
-    return rows.map(rowToNode);
+    return this.nodeQueries.getNodesByQualifiedNameExact(qualifiedName);
   }
 
-  /**
-   * Get nodes by lowercase name match (uses idx_nodes_lower_name expression index)
-   */
   getNodesByLowerName(lowerName: string): Node[] {
-    if (!this.stmts.getNodesByLowerName) {
-      this.stmts.getNodesByLowerName = this.db.prepare(
-        'SELECT * FROM nodes WHERE lower(name) = ?'
-      );
-    }
-    const rows = this.stmts.getNodesByLowerName.all(lowerName) as NodeRow[];
-    return rows.map(rowToNode);
+    return this.nodeQueries.getNodesByLowerName(lowerName);
   }
 
   searchNodes(query: string, options: SearchOptions = {}): SearchResult[] {
-    return runSearchNodes(
-      {
-        runStatement: (sql, fn) => this.withStatement(sql, fn),
-        getAllNodeNames: () => this.getAllNodeNames(),
-      },
-      query,
-      options
-    );
+    return this.nodeQueries.searchNodes(query, options);
   }
 
-  /**
-   * Find nodes by exact name match
-   *
-   * Used for hybrid search - looks up symbols by exact name or case-insensitive match.
-   * Returns high-confidence matches for known symbol names extracted from query.
-   *
-   * @param names - Array of symbol names to look up
-   * @param options - Search options (kinds, languages, limit)
-   * @returns SearchResult array with exact matches scored at 1.0
-   */
   findNodesByExactName(names: string[], options: SearchOptions = {}): SearchResult[] {
-    return runFindNodesByExactName(
-      {
-        runStatement: (sql, fn) => this.withStatement(sql, fn),
-        getAllNodeNames: () => this.getAllNodeNames(),
-      },
-      names,
-      options
-    );
+    return this.nodeQueries.findNodesByExactName(names, options);
   }
 
-  /**
-   * Find nodes whose name contains a substring (LIKE-based).
-   * Useful for CamelCase-part matching where FTS fails because
-   * e.g. "TransportSearchAction" is one FTS token, not matchable by "Search"*.
-   *
-   * Results are ordered by name length (shorter = more likely to be the core type).
-   */
   findNodesByNameSubstring(
     substring: string,
     options: SearchOptions & { excludePrefix?: boolean } = {}
   ): SearchResult[] {
-    return runFindNodesByNameSubstring(
-      {
-        runStatement: (sql, fn) => this.withStatement(sql, fn),
-        getAllNodeNames: () => this.getAllNodeNames(),
-      },
-      substring,
-      options
-    );
+    return this.nodeQueries.findNodesByNameSubstring(substring, options);
   }
 
   // ===========================================================================
@@ -579,81 +359,42 @@ export class QueryBuilder {
    * Insert an unresolved reference
    */
   insertUnresolvedRef(ref: UnresolvedReference): void {
-    if (!this.stmts.insertUnresolved) {
-      this.stmts.insertUnresolved = this.db.prepare(`
-        INSERT INTO unresolved_refs (from_node_id, reference_name, reference_kind, line, col, candidates, file_path, language)
-        VALUES (@fromNodeId, @referenceName, @referenceKind, @line, @col, @candidates, @filePath, @language)
-      `);
-    }
-
-    this.stmts.insertUnresolved.run({
-      fromNodeId: ref.fromNodeId,
-      referenceName: ref.referenceName,
-      referenceKind: ref.referenceKind,
-      line: ref.line,
-      col: ref.column,
-      candidates: ref.candidates ? JSON.stringify(ref.candidates) : null,
-      filePath: ref.filePath ?? '',
-      language: ref.language ?? 'unknown',
-    });
+    this.unresolvedRefs.insert(ref);
   }
 
   /**
    * Insert multiple unresolved references in a transaction
    */
   insertUnresolvedRefsBatch(refs: UnresolvedReference[]): void {
-    if (refs.length === 0) return;
-    const insert = this.db.transaction(() => {
-      for (const ref of refs) {
-        this.insertUnresolvedRef(ref);
-      }
-    });
-    insert();
+    this.unresolvedRefs.insertBatch(refs);
   }
 
   /**
    * Delete unresolved references from a node
    */
   deleteUnresolvedByNode(nodeId: string): void {
-    if (!this.stmts.deleteUnresolvedByNode) {
-      this.stmts.deleteUnresolvedByNode = this.db.prepare(
-        'DELETE FROM unresolved_refs WHERE from_node_id = ?'
-      );
-    }
-    this.stmts.deleteUnresolvedByNode.run(nodeId);
+    this.unresolvedRefs.deleteByNode(nodeId);
   }
 
   /**
    * Get unresolved references by name (for resolution)
    */
   getUnresolvedByName(name: string): UnresolvedReference[] {
-    if (!this.stmts.getUnresolvedByName) {
-      this.stmts.getUnresolvedByName = this.db.prepare(
-        'SELECT * FROM unresolved_refs WHERE reference_name = ?'
-      );
-    }
-    const rows = this.stmts.getUnresolvedByName.all(name) as UnresolvedRefRow[];
-    return rows.map(rowToUnresolvedReference);
+    return this.unresolvedRefs.getByName(name);
   }
 
   /**
    * Get all unresolved references
    */
   getUnresolvedReferences(): UnresolvedReference[] {
-    return runGetUnresolvedReferences((sql, fn) => this.withStatement(sql, fn));
+    return this.unresolvedRefs.getAll();
   }
 
   /**
    * Get the count of unresolved references without loading them into memory
    */
   getUnresolvedReferencesCount(): number {
-    if (!this.stmts.getUnresolvedCount) {
-      this.stmts.getUnresolvedCount = this.db.prepare(
-        'SELECT COUNT(*) as count FROM unresolved_refs'
-      );
-    }
-    const row = this.stmts.getUnresolvedCount.get() as { count: number };
-    return row.count;
+    return this.unresolvedRefs.count();
   }
 
   /**
@@ -661,13 +402,7 @@ export class QueryBuilder {
    * Used to process references in bounded memory chunks.
    */
   getUnresolvedReferencesBatch(offset: number, limit: number): UnresolvedReference[] {
-    if (!this.stmts.getUnresolvedBatch) {
-      this.stmts.getUnresolvedBatch = this.db.prepare(
-        'SELECT * FROM unresolved_refs ORDER BY id LIMIT ? OFFSET ?'
-      );
-    }
-    const rows = this.stmts.getUnresolvedBatch.all(limit, offset) as UnresolvedRefRow[];
-    return rows.map(rowToUnresolvedReference);
+    return this.unresolvedRefs.getBatch(offset, limit);
   }
 
   /**
@@ -685,11 +420,7 @@ export class QueryBuilder {
    * Get all distinct node names (lightweight — just name strings for pre-filtering)
    */
   getAllNodeNames(): string[] {
-    if (!this.stmts.getAllNodeNames) {
-      this.stmts.getAllNodeNames = this.db.prepare('SELECT DISTINCT name FROM nodes');
-    }
-    const rows = this.stmts.getAllNodeNames.all() as Array<{ name: string }>;
-    return rows.map((r) => r.name);
+    return this.nodeQueries.getAllNodeNames();
   }
 
   /**
@@ -697,24 +428,21 @@ export class QueryBuilder {
    * Uses the idx_unresolved_file_path index for efficient lookup.
    */
   getUnresolvedReferencesByFiles(filePaths: string[]): UnresolvedReference[] {
-    return runGetUnresolvedReferencesByFiles(
-      (sql, fn) => this.withStatement(sql, fn),
-      filePaths
-    );
+    return this.unresolvedRefs.getByFiles(filePaths);
   }
 
   /**
    * Delete all unresolved references (after resolution)
    */
   clearUnresolvedReferences(): void {
-    this.db.exec('DELETE FROM unresolved_refs');
+    this.unresolvedRefs.clear();
   }
 
   /**
    * Delete resolved references by their IDs
    */
   deleteResolvedReferences(fromNodeIds: string[]): void {
-    runDeleteResolvedReferences((sql, fn) => this.withStatement(sql, fn), fromNodeIds);
+    this.unresolvedRefs.deleteResolved(fromNodeIds);
   }
 
   /**
@@ -722,7 +450,7 @@ export class QueryBuilder {
    * More precise than deleteResolvedReferences — only removes refs that were actually resolved.
    */
   deleteSpecificResolvedReferences(refs: ResolvedReferenceKey[]): void {
-    runDeleteSpecificResolvedReferences(this.db, refs);
+    this.unresolvedRefs.deleteSpecificResolved(refs);
   }
 
   // ===========================================================================
@@ -740,23 +468,17 @@ export class QueryBuilder {
   // Project Metadata
   // ===========================================================================
 
-  /**
-   * Get a metadata value by key
-   */
+  // Get a metadata value by key
   getMetadata(key: string): string | null {
     return runGetMetadata({ runStatement: (sql, fn) => this.withStatement(sql, fn) }, key);
   }
 
-  /**
-   * Set a metadata key-value pair (upsert)
-   */
+  // Set a metadata key-value pair (upsert)
   setMetadata(key: string, value: string): void {
     runSetMetadata({ runStatement: (sql, fn) => this.withStatement(sql, fn) }, key, value);
   }
 
-  /**
-   * Get all metadata as a key-value record
-   */
+  // Get all metadata as a key-value record
   getAllMetadata(): Record<string, string> {
     return runGetAllMetadata({ runStatement: (sql, fn) => this.withStatement(sql, fn) });
   }

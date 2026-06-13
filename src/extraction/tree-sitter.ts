@@ -16,32 +16,18 @@ import {
   UnresolvedReference,
 } from '../types';
 import { getParser, detectLanguage, isLanguageSupported } from './grammars';
-import { generateNodeId, getNodeText, getChildByField, getPrecedingDocstring } from './tree-sitter-helpers';
-import {
-  extractInstantiationClassName,
-  extractName,
-  isInstantiationNodeType,
-} from './tree-sitter-node-helpers';
-import { extractCallReference } from './call-extraction';
-import { extractDecoratorReferences } from './decorator-extraction';
-import { extractInheritanceReferences } from './inheritance-extraction';
-import { extractImportDeclarations } from './import-extraction';
-import {
-  extractEnumMemberNodes,
-  extractFieldDeclaration,
-  extractPropertyDeclaration,
-} from './member-extraction';
-import {
-  visitPascalNode,
-} from './pascal-extraction-helpers';
-import {
-  extractTypeAnnotationsFromDeclaration,
-  extractTypeRefsFromSubtree,
-  supportsTypeAnnotations,
-} from './type-reference-extraction';
-import { extractVariableDeclarations } from './variable-extraction';
+import { generateNodeId } from './tree-sitter-helpers';
+import { isInstantiationNodeType } from './tree-sitter-node-helpers';
+import { visitPascalNode } from './pascal-extraction-helpers';
 import type { LanguageExtractor, ExtractorContext } from './tree-sitter-types';
 import { EXTRACTORS } from './languages';
+import {
+  extractFunction, extractClass, extractMethod, extractInterface, extractStruct,
+  extractEnum, extractProperty, extractField, extractVariable,
+  extractTypeAlias, extractImport, extractCall, extractInstantiation,
+  visitFunctionBody, extractRustImplItem,
+} from './extractors';
+
 
 // Re-export for backward compatibility
 export { generateNodeId } from './tree-sitter-helpers';
@@ -50,17 +36,17 @@ export { generateNodeId } from './tree-sitter-helpers';
  * TreeSitterExtractor - Main extraction class
  */
 export class TreeSitterExtractor {
-  private filePath: string;
-  private language: Language;
-  private source: string;
-  private tree: Tree | null = null;
-  private nodes: Node[] = [];
-  private edges: Edge[] = [];
-  private unresolvedReferences: UnresolvedReference[] = [];
+  filePath: string;
+  language: Language;
+  source: string;
+  tree: Tree | null = null;
+  nodes: Node[] = [];
+  edges: Edge[] = [];
+  unresolvedReferences: UnresolvedReference[] = [];
   private errors: ExtractionError[] = [];
-  private extractor: LanguageExtractor | null = null;
-  private nodeStack: string[] = []; // Stack of parent node IDs
-  private methodIndex: Map<string, string> | null = null; // lookup key → node ID for Pascal defProc lookup
+  extractor: LanguageExtractor | null = null;
+  nodeStack: string[] = []; // Stack of parent node IDs
+  methodIndex: Map<string, string> | null = null; // lookup key → node ID for Pascal defProc lookup
 
   constructor(filePath: string, source: string, language?: Language) {
     this.filePath = filePath;
@@ -176,7 +162,7 @@ export class TreeSitterExtractor {
   /**
    * Visit a node and extract information
    */
-  private visitNode(node: SyntaxNode): void {
+  visitNode(node: SyntaxNode): void {
     if (!this.extractor) return;
 
     const nodeType = node.type;
@@ -216,10 +202,10 @@ export class TreeSitterExtractor {
     if (this.extractor.functionTypes.includes(nodeType)) {
       if (this.isInsideClassLikeNode() && this.extractor.methodTypes.includes(nodeType)) {
         // Inside a class - treat as method
-        this.extractMethod(node);
+        extractMethod(this, node);
         skipChildren = true; // extractMethod visits children via visitFunctionBody
       } else {
-        this.extractFunction(node);
+        extractFunction(this, node);
         skipChildren = true; // extractFunction visits children via visitFunctionBody
       }
     }
@@ -228,63 +214,63 @@ export class TreeSitterExtractor {
       // Some languages reuse class_declaration for structs/enums (e.g. Swift)
       const classification = this.extractor.classifyClassNode?.(node) ?? 'class';
       if (classification === 'struct') {
-        this.extractStruct(node);
+        extractStruct(this, node);
       } else if (classification === 'enum') {
-        this.extractEnum(node);
+        extractEnum(this, node);
       } else if (classification === 'interface') {
-        this.extractInterface(node);
+        extractInterface(this, node);
       } else if (classification === 'trait') {
-        this.extractClass(node, 'trait');
+        extractClass(this, node, 'trait');
       } else {
-        this.extractClass(node);
+        extractClass(this, node);
       }
       skipChildren = true; // extractClass visits body children
     }
     // Extra class node types (e.g. Dart mixin_declaration, extension_declaration)
     else if (this.extractor.extraClassNodeTypes?.includes(nodeType)) {
-      this.extractClass(node);
+      extractClass(this, node);
       skipChildren = true;
     }
     // Check for method declarations (only if not already handled by functionTypes)
     else if (this.extractor.methodTypes.includes(nodeType)) {
-      this.extractMethod(node);
+      extractMethod(this, node);
       skipChildren = true; // extractMethod visits children via visitFunctionBody
     }
     // Check for interface/protocol/trait declarations
     else if (this.extractor.interfaceTypes.includes(nodeType)) {
-      this.extractInterface(node);
+      extractInterface(this, node);
       skipChildren = true; // extractInterface visits body children
     }
     // Check for struct declarations
     else if (this.extractor.structTypes.includes(nodeType)) {
-      this.extractStruct(node);
+      extractStruct(this, node);
       skipChildren = true; // extractStruct visits body children
     }
     // Check for enum declarations
     else if (this.extractor.enumTypes.includes(nodeType)) {
-      this.extractEnum(node);
+      extractEnum(this, node);
       skipChildren = true; // extractEnum visits body children
     }
     // Check for type alias declarations (e.g. `type X = ...` in TypeScript)
     // For Go, type_spec wraps struct/interface definitions — resolveTypeAliasKind
     // detects these and extractTypeAlias creates the correct node kind.
     else if (this.extractor.typeAliasTypes.includes(nodeType)) {
-      skipChildren = this.extractTypeAlias(node);
+      skipChildren = extractTypeAlias(this, node);
     }
     // Check for class properties (e.g. C# property_declaration)
     else if (this.extractor.propertyTypes?.includes(nodeType) && this.isInsideClassLikeNode()) {
-      this.extractProperty(node);
+      extractProperty(this, node);
       skipChildren = true;
     }
     // Check for class fields (e.g. Java field_declaration, C# field_declaration)
     else if (this.extractor.fieldTypes?.includes(nodeType) && this.isInsideClassLikeNode()) {
-      this.extractField(node);
+      extractField(this, node);
       skipChildren = true;
     }
     // Check for variable declarations (const, let, var, etc.)
     // Only extract top-level variables (not inside functions/methods)
     else if (this.extractor.variableTypes.includes(nodeType) && !this.isInsideClassLikeNode()) {
-      this.extractVariable(node);
+      extractVariable(this, node);
       skipChildren = true; // extractVariable handles children
     }
     // `export_statement` itself is not extracted — the walker descends
@@ -302,18 +288,18 @@ export class TreeSitterExtractor {
     // export-statement helper was redundant.
     // Check for imports
     else if (this.extractor.importTypes.includes(nodeType)) {
-      this.extractImport(node);
+      extractImport(this, node);
     }
     // Check for function calls
     else if (this.extractor.callTypes.includes(nodeType)) {
-      this.extractCall(node);
+      extractCall(this, node);
     }
     // `new Foo(...)` / `Foo::new(...)` / object_creation_expression —
     // produce an `instantiates` reference. Children still walked so
     // nested calls inside the constructor args (`new Foo(bar())`) get
     // their own `calls` refs.
     else if (isInstantiationNodeType(nodeType)) {
-      this.extractInstantiation(node);
+      extractInstantiation(this, node);
     }
     // (Decorator handling lives inside the symbol-creating extractors
     // — extractClass / extractFunction / extractProperty — because the
@@ -321,7 +307,7 @@ export class TreeSitterExtractor {
     // would otherwise see the wrong nodeStack head.)
     // Rust: `impl Trait for Type { ... }` — creates implements edge from Type to Trait
     else if (nodeType === 'impl_item') {
-      this.extractRustImplItem(node);
+      extractRustImplItem(this, node);
     }
 
     // Visit children (unless the extract method already visited them)
@@ -338,7 +324,7 @@ export class TreeSitterExtractor {
   /**
    * Create a Node object
    */
-  private createNode(
+  createNode(
     kind: NodeKind,
     name: string,
     node: SyntaxNode,
@@ -388,7 +374,7 @@ export class TreeSitterExtractor {
    * Find first named child whose type is in the given list.
    * Used to locate inner type nodes (e.g. enum_specifier inside a typedef).
    */
-  private findChildByTypes(node: SyntaxNode, types: string[]): SyntaxNode | null {
+  findChildByTypes(node: SyntaxNode, types: string[]): SyntaxNode | null {
     for (let i = 0; i < node.namedChildCount; i++) {
       const child = node.namedChild(i);
       if (child && types.includes(child.type)) return child;
@@ -399,7 +385,7 @@ export class TreeSitterExtractor {
   /**
    * Build qualified name from node stack
    */
-  private buildQualifiedName(name: string): string {
+  buildQualifiedName(name: string): string {
     // Build a qualified name from the semantic hierarchy only (no file path).
     // The file path is stored separately in filePath and pollutes FTS if included here.
     const parts: string[] = [];
@@ -416,13 +402,13 @@ export class TreeSitterExtractor {
   /**
    * Build an ExtractorContext for passing to language-specific visitNode hooks.
    */
-  private makeExtractorContext(): ExtractorContext {
+  makeExtractorContext(): ExtractorContext {
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const self = this;
     return {
       createNode: (kind, name, node, extra) => self.createNode(kind, name, node, extra),
       visitNode: (node) => self.visitNode(node),
-      visitFunctionBody: (body, functionId) => self.visitFunctionBody(body, functionId),
+      visitFunctionBody: (body, functionId) => visitFunctionBody(self, body, functionId),
       addUnresolvedReference: (ref) => self.unresolvedReferences.push(ref),
       pushScope: (nodeId) => self.nodeStack.push(nodeId),
       popScope: () => self.nodeStack.pop(),
@@ -437,7 +423,7 @@ export class TreeSitterExtractor {
    * Check if the current node stack indicates we are inside a class-like node
    * (class, struct, interface, trait). File nodes do not count as class-like.
    */
-  private isInsideClassLikeNode(): boolean {
+  isInsideClassLikeNode(): boolean {
     if (this.nodeStack.length === 0) return false;
     const parentId = this.nodeStack[this.nodeStack.length - 1];
     if (!parentId) return false;
@@ -456,744 +442,5 @@ export class TreeSitterExtractor {
   /**
    * Extract a function
    */
-  private extractFunction(node: SyntaxNode): void {
-    if (!this.extractor) return;
-
-    // If the language provides getReceiverType and this function has a receiver
-    // (e.g., Rust function_item inside an impl block), extract as method instead
-    if (this.extractor.getReceiverType?.(node, this.source)) {
-      this.extractMethod(node);
-      return;
-    }
-
-    let name = extractName(node, this.source, this.extractor);
-    // For arrow functions and function expressions assigned to variables,
-    // resolve the name from the parent variable_declarator.
-    // e.g. `export const useAuth = () => { ... }` — the arrow_function node
-    // has no `name` field; the name lives on the variable_declarator.
-    if (
-      name === '<anonymous>' &&
-      (node.type === 'arrow_function' || node.type === 'function_expression')
-    ) {
-      const parent = node.parent;
-      if (parent?.type === 'variable_declarator') {
-        const varName = getChildByField(parent, 'name');
-        if (varName) {
-          name = getNodeText(varName, this.source);
-        }
-      }
-    }
-    if (name === '<anonymous>') return; // Skip anonymous functions
-
-    // Check for misparse artifacts (e.g. C++ macros causing "namespace detail" functions)
-    // Skip the node but still visit the body for calls and structural nodes
-    if (this.extractor.isMisparsedFunction?.(name, node)) {
-      const body = this.extractor.resolveBody?.(node, this.extractor.bodyField)
-        ?? getChildByField(node, this.extractor.bodyField);
-      if (body) {
-        this.visitFunctionBody(body, '');
-      }
-      return;
-    }
-
-    const docstring = getPrecedingDocstring(node, this.source);
-    const signature = this.extractor.getSignature?.(node, this.source);
-    const visibility = this.extractor.getVisibility?.(node);
-    const isExported = this.extractor.isExported?.(node, this.source);
-    const isAsync = this.extractor.isAsync?.(node);
-    const isStatic = this.extractor.isStatic?.(node);
-
-    const funcNode = this.createNode('function', name, node, {
-      docstring,
-      signature,
-      visibility,
-      isExported,
-      isAsync,
-      isStatic,
-    });
-    if (!funcNode) return;
-
-    // Extract type annotations (parameter types and return type)
-    extractTypeAnnotationsFromDeclaration(
-      node,
-      funcNode.id,
-      this.language,
-      this.source,
-      this.extractor,
-      (ref) => this.unresolvedReferences.push(ref)
-    );
-
-    // Extract decorators applied to the function (rare in JS/TS but
-    // present in Python `@decorator def f():` and Java/Kotlin
-    // annotations on free functions).
-    this.extractDecoratorsFor(node, funcNode.id);
-
-    // Push to stack and visit body
-    this.nodeStack.push(funcNode.id);
-    const body = this.extractor.resolveBody?.(node, this.extractor.bodyField)
-      ?? getChildByField(node, this.extractor.bodyField);
-    if (body) {
-      this.visitFunctionBody(body, funcNode.id);
-    }
-    this.nodeStack.pop();
-  }
-
-  /**
-   * Extract a class
-   */
-  private extractClass(node: SyntaxNode, kind: NodeKind = 'class'): void {
-    if (!this.extractor) return;
-
-    const name = extractName(node, this.source, this.extractor);
-    const docstring = getPrecedingDocstring(node, this.source);
-    const visibility = this.extractor.getVisibility?.(node);
-    const isExported = this.extractor.isExported?.(node, this.source);
-
-    const classNode = this.createNode(kind, name, node, {
-      docstring,
-      visibility,
-      isExported,
-    });
-    if (!classNode) return;
-
-    // Extract extends/implements
-    this.extractInheritance(node, classNode.id);
-
-    // Extract decorators applied to the class (`@Foo class X {}`).
-    this.extractDecoratorsFor(node, classNode.id);
-
-    // Push to stack and visit body
-    this.nodeStack.push(classNode.id);
-    let body = this.extractor.resolveBody?.(node, this.extractor.bodyField)
-      ?? getChildByField(node, this.extractor.bodyField);
-    if (!body) body = node;
-
-    // Visit all children for methods and properties
-    for (let i = 0; i < body.namedChildCount; i++) {
-      const child = body.namedChild(i);
-      if (child) {
-        this.visitNode(child);
-      }
-    }
-    this.nodeStack.pop();
-  }
-
-  /**
-   * Extract a method
-   */
-  private extractMethod(node: SyntaxNode): void {
-    if (!this.extractor) return;
-
-    // For languages with receiver types (Go, Rust), include receiver in qualified name
-    // so FTS can match "scrapeLoop.run" → qualified_name "...::scrapeLoop::run"
-    const receiverType = this.extractor.getReceiverType?.(node, this.source);
-
-    // For most languages, only extract as method if inside a class-like node
-    // Languages with methodsAreTopLevel (e.g. Go) always treat them as methods
-    // Languages with getReceiverType (e.g. Rust) extract as method when receiver is found
-    if (!this.isInsideClassLikeNode() && !this.extractor.methodsAreTopLevel && !receiverType) {
-      // Skip method_definition nodes inside object literals (getters/setters/methods
-      // in inline objects). These are ephemeral and create noise (e.g., Svelte context
-      // objects: `ctx.set({ get view() { ... } })`).
-      if (node.parent?.type === 'object' || node.parent?.type === 'object_expression') {
-        return;
-      }
-      // Not inside a class-like node and no receiver type, treat as function
-      this.extractFunction(node);
-      return;
-    }
-
-    const name = extractName(node, this.source, this.extractor);
-
-    // Check for misparse artifacts (e.g. C++ "switch" inside macro-confused class body)
-    if (this.extractor.isMisparsedFunction?.(name, node)) {
-      const body = this.extractor.resolveBody?.(node, this.extractor.bodyField)
-        ?? getChildByField(node, this.extractor.bodyField);
-      if (body) {
-        this.visitFunctionBody(body, '');
-      }
-      return;
-    }
-
-    const docstring = getPrecedingDocstring(node, this.source);
-    const signature = this.extractor.getSignature?.(node, this.source);
-    const visibility = this.extractor.getVisibility?.(node);
-    const isAsync = this.extractor.isAsync?.(node);
-    const isStatic = this.extractor.isStatic?.(node);
-    const extraProps: Partial<Node> = {
-      docstring,
-      signature,
-      visibility,
-      isAsync,
-      isStatic,
-    };
-    if (receiverType) {
-      extraProps.qualifiedName = `${receiverType}::${name}`;
-    }
-
-    const methodNode = this.createNode('method', name, node, extraProps);
-    if (!methodNode) return;
-
-    // For methods with a receiver type but no class-like parent on the stack
-    // (e.g., Rust impl blocks), add a contains edge from the owning struct/trait
-    if (receiverType && !this.isInsideClassLikeNode()) {
-      const ownerNode = this.nodes.find(
-        (n) =>
-          n.name === receiverType &&
-          n.filePath === this.filePath &&
-          (n.kind === 'struct' || n.kind === 'class' || n.kind === 'enum' || n.kind === 'trait')
-      );
-      if (ownerNode) {
-        this.edges.push({
-          source: ownerNode.id,
-          target: methodNode.id,
-          kind: 'contains',
-        });
-      }
-    }
-
-    // Extract type annotations (parameter types and return type)
-    extractTypeAnnotationsFromDeclaration(
-      node,
-      methodNode.id,
-      this.language,
-      this.source,
-      this.extractor,
-      (ref) => this.unresolvedReferences.push(ref)
-    );
-
-    // Extract decorators (`@Get('/list') list() {}`).
-    this.extractDecoratorsFor(node, methodNode.id);
-
-    // Push to stack and visit body
-    this.nodeStack.push(methodNode.id);
-    const body = this.extractor.resolveBody?.(node, this.extractor.bodyField)
-      ?? getChildByField(node, this.extractor.bodyField);
-    if (body) {
-      this.visitFunctionBody(body, methodNode.id);
-    }
-    this.nodeStack.pop();
-  }
-
-  /**
-   * Extract an interface/protocol/trait
-   */
-  private extractInterface(node: SyntaxNode): void {
-    if (!this.extractor) return;
-
-    const name = extractName(node, this.source, this.extractor);
-    const docstring = getPrecedingDocstring(node, this.source);
-    const isExported = this.extractor.isExported?.(node, this.source);
-
-    const kind: NodeKind = this.extractor.interfaceKind ?? 'interface';
-
-    const interfaceNode = this.createNode(kind, name, node, {
-      docstring,
-      isExported,
-    });
-    if (!interfaceNode) return;
-
-    // Extract extends (interface inheritance)
-    this.extractInheritance(node, interfaceNode.id);
-
-    // Visit body children for interface methods and nested types
-    this.nodeStack.push(interfaceNode.id);
-    let body = this.extractor.resolveBody?.(node, this.extractor.bodyField)
-      ?? getChildByField(node, this.extractor.bodyField);
-    if (!body) body = node;
-    for (let i = 0; i < body.namedChildCount; i++) {
-      const child = body.namedChild(i);
-      if (child) {
-        this.visitNode(child);
-      }
-    }
-    this.nodeStack.pop();
-  }
-
-  /**
-   * Extract a struct
-   */
-  private extractStruct(node: SyntaxNode): void {
-    if (!this.extractor) return;
-
-    // Skip forward declarations and type references (no body = not a definition)
-    const body = getChildByField(node, this.extractor.bodyField);
-    if (!body) return;
-
-    const name = extractName(node, this.source, this.extractor);
-    const docstring = getPrecedingDocstring(node, this.source);
-    const visibility = this.extractor.getVisibility?.(node);
-    const isExported = this.extractor.isExported?.(node, this.source);
-
-    const structNode = this.createNode('struct', name, node, {
-      docstring,
-      visibility,
-      isExported,
-    });
-    if (!structNode) return;
-
-    // Extract inheritance (e.g. Swift: struct HTTPMethod: RawRepresentable)
-    this.extractInheritance(node, structNode.id);
-
-    // Push to stack for field extraction
-    this.nodeStack.push(structNode.id);
-    for (let i = 0; i < body.namedChildCount; i++) {
-      const child = body.namedChild(i);
-      if (child) {
-        this.visitNode(child);
-      }
-    }
-    this.nodeStack.pop();
-  }
-
-  /**
-   * Extract an enum
-   */
-  private extractEnum(node: SyntaxNode): void {
-    if (!this.extractor) return;
-
-    // Skip forward declarations and type references (no body = not a definition)
-    const body = this.extractor.resolveBody?.(node, this.extractor.bodyField)
-      ?? getChildByField(node, this.extractor.bodyField);
-    if (!body) return;
-
-    const name = extractName(node, this.source, this.extractor);
-    const docstring = getPrecedingDocstring(node, this.source);
-    const visibility = this.extractor.getVisibility?.(node);
-    const isExported = this.extractor.isExported?.(node, this.source);
-
-    const enumNode = this.createNode('enum', name, node, {
-      docstring,
-      visibility,
-      isExported,
-    });
-    if (!enumNode) return;
-
-    // Extract inheritance (e.g. Swift: enum AFError: Error)
-    this.extractInheritance(node, enumNode.id);
-
-    // Push to stack and visit body children (enum members, nested types, methods)
-    this.nodeStack.push(enumNode.id);
-
-    const memberTypes = this.extractor.enumMemberTypes;
-    for (let i = 0; i < body.namedChildCount; i++) {
-      const child = body.namedChild(i);
-      if (!child) continue;
-
-      if (memberTypes?.includes(child.type)) {
-        this.extractEnumMembers(child);
-      } else {
-        this.visitNode(child);
-      }
-    }
-    this.nodeStack.pop();
-  }
-
-  /**
-   * Extract enum member names from an enum member node.
-   * Handles multi-case declarations (Swift: `case put, delete`) and single-case patterns.
-   */
-  private extractEnumMembers(node: SyntaxNode): void {
-    extractEnumMemberNodes(node, this.source, (kind, name, sourceNode, metadata) =>
-      this.createNode(kind, name, sourceNode, metadata)
-    );
-  }
-
-  /**
-   * Extract a class property declaration (e.g. C# `public string Name { get; set; }`).
-   * Extracts as 'property' kind node inside the owning class.
-   */
-  private extractProperty(node: SyntaxNode): void {
-    if (!this.extractor) return;
-
-    extractPropertyDeclaration({
-      node,
-      source: this.source,
-      extractor: this.extractor,
-      createNode: (kind, name, sourceNode, metadata) =>
-        this.createNode(kind, name, sourceNode, metadata),
-      extractDecoratorsFor: (declNode, decoratedId) =>
-        this.extractDecoratorsFor(declNode, decoratedId),
-    });
-  }
-
-  /**
-   * Extract a class field declaration (e.g. Java field_declaration, C# field_declaration).
-   * Extracts each declarator as a 'field' kind node inside the owning class.
-   */
-  private extractField(node: SyntaxNode): void {
-    if (!this.extractor) return;
-
-    extractFieldDeclaration({
-      node,
-      source: this.source,
-      extractor: this.extractor,
-      createNode: (kind, name, sourceNode, metadata) =>
-        this.createNode(kind, name, sourceNode, metadata),
-      extractDecoratorsFor: (declNode, decoratedId) =>
-        this.extractDecoratorsFor(declNode, decoratedId),
-    });
-  }
-
-  /**
-   * Extract a variable declaration (const, let, var, etc.)
-   *
-   * Extracts top-level and module-level variable declarations.
-   * Captures the variable name and first 100 chars of initializer in signature for searchability.
-   */
-  private extractVariable(node: SyntaxNode): void {
-    if (!this.extractor) return;
-
-    extractVariableDeclarations({
-      node,
-      source: this.source,
-      language: this.language,
-      extractor: this.extractor,
-      createNode: (kind, name, sourceNode, metadata) =>
-        this.createNode(kind, name, sourceNode, metadata),
-      extractFunction: (functionNode) => this.extractFunction(functionNode),
-      addReference: (ref) => this.unresolvedReferences.push(ref),
-    });
-  }
-
-  /**
-   * Extract a type alias (e.g. `export type X = ...` in TypeScript).
-   * For languages like Go, resolveTypeAliasKind detects when the type_spec
-   * wraps a struct or interface definition and creates the correct node kind.
-   * Returns true if children should be skipped (struct/interface handled body visiting).
-   */
-  private extractTypeAlias(node: SyntaxNode): boolean {
-    if (!this.extractor) return false;
-
-    const name = extractName(node, this.source, this.extractor);
-    if (name === '<anonymous>') return false;
-    const docstring = getPrecedingDocstring(node, this.source);
-    const isExported = this.extractor.isExported?.(node, this.source);
-
-    // Check if this type alias is actually a struct or interface definition
-    // (e.g. Go: `type Foo struct { ... }` is a type_spec wrapping struct_type)
-    const resolvedKind = this.extractor.resolveTypeAliasKind?.(node, this.source);
-
-    if (resolvedKind === 'struct') {
-      const structNode = this.createNode('struct', name, node, { docstring, isExported });
-      if (!structNode) return true;
-      // Visit body children for field extraction
-      this.nodeStack.push(structNode.id);
-      // Try Go-style 'type' field first, then find inner struct child (C typedef struct)
-      const typeChild = getChildByField(node, 'type')
-        || this.findChildByTypes(node, this.extractor.structTypes);
-      if (typeChild) {
-        // Extract struct embedding (e.g. Go: `type DB struct { *Head; Queryable }`)
-        this.extractInheritance(typeChild, structNode.id);
-        const body = getChildByField(typeChild, this.extractor.bodyField) || typeChild;
-        for (let i = 0; i < body.namedChildCount; i++) {
-          const child = body.namedChild(i);
-          if (child) this.visitNode(child);
-        }
-      }
-      this.nodeStack.pop();
-      return true;
-    }
-
-    if (resolvedKind === 'enum') {
-      const enumNode = this.createNode('enum', name, node, { docstring, isExported });
-      if (!enumNode) return true;
-      this.nodeStack.push(enumNode.id);
-      // Find the inner enum type child (e.g. C: typedef enum { ... } name)
-      const innerEnum = this.findChildByTypes(node, this.extractor.enumTypes);
-      if (innerEnum) {
-        this.extractInheritance(innerEnum, enumNode.id);
-        const body = this.extractor.resolveBody?.(innerEnum, this.extractor.bodyField)
-          ?? getChildByField(innerEnum, this.extractor.bodyField);
-        if (body) {
-          const memberTypes = this.extractor.enumMemberTypes;
-          for (let i = 0; i < body.namedChildCount; i++) {
-            const child = body.namedChild(i);
-            if (!child) continue;
-            if (memberTypes?.includes(child.type)) {
-              this.extractEnumMembers(child);
-            } else {
-              this.visitNode(child);
-            }
-          }
-        }
-      }
-      this.nodeStack.pop();
-      return true;
-    }
-
-    if (resolvedKind === 'interface') {
-      const kind: NodeKind = this.extractor.interfaceKind ?? 'interface';
-      const interfaceNode = this.createNode(kind, name, node, { docstring, isExported });
-      if (!interfaceNode) return true;
-      // Extract interface inheritance from the inner type node
-      const typeChild = getChildByField(node, 'type');
-      if (typeChild) this.extractInheritance(typeChild, interfaceNode.id);
-      return true;
-    }
-
-    const typeAliasNode = this.createNode('type_alias', name, node, {
-      docstring,
-      isExported,
-    });
-
-    // Extract type references from the alias value (e.g., `type X = ITextModel | null`)
-    if (typeAliasNode && supportsTypeAnnotations(this.language)) {
-      // The value is everything after the `=`, which is typically the last named child
-      // In tree-sitter TS: type_alias_declaration has name + value children
-      const value = getChildByField(node, 'value');
-      if (value) {
-        extractTypeRefsFromSubtree(
-          value,
-          this.source,
-          typeAliasNode.id,
-          (ref) => this.unresolvedReferences.push(ref)
-        );
-      }
-    }
-    return false;
-  }
-
-  // extractExportedVariables removed — the walker now descends into
-  // export_statement children and the inner declaration's dedicated
-  // extractor (extractVariable, extractFunction, extractClass, etc.)
-  // handles the symbol with isExported=true via parent-walk in the
-  // language extractor's isExported predicate.
-
-  /**
-   * Extract an import
-   *
-   * Creates an import node with the full import statement stored in signature for searchability.
-   * Also creates unresolved references for resolution purposes.
-   */
-  private extractImport(node: SyntaxNode): void {
-    if (!this.extractor) return;
-
-    extractImportDeclarations({
-      node,
-      source: this.source,
-      language: this.language,
-      extractor: this.extractor,
-      parentId: this.nodeStack[this.nodeStack.length - 1],
-      createImportNode: (moduleName, importNode, signature) => {
-        this.createNode('import', moduleName, importNode, { signature });
-      },
-      addReference: (ref) => this.unresolvedReferences.push(ref),
-    });
-  }
-
-  /**
-   * Extract a function call
-   */
-  private extractCall(node: SyntaxNode): void {
-    if (this.nodeStack.length === 0) return;
-
-    const callerId = this.nodeStack[this.nodeStack.length - 1];
-    if (!callerId) return;
-
-    const ref = extractCallReference(node, this.source, callerId);
-    if (ref) this.unresolvedReferences.push(ref);
-  }
-
-  /**
-   * `new Foo(...)` / `Foo::new(...)` / object_creation_expression —
-   * emit an `instantiates` reference to the class name. The resolver
-   * then links it to the class node, producing the `instantiates`
-   * edge that powers "what creates instances of X" queries.
-   *
-   * Children are still walked so nested calls inside the constructor
-   * arguments (`new Foo(bar())`) get their own `calls` references.
-   */
-  private extractInstantiation(node: SyntaxNode): void {
-    if (this.nodeStack.length === 0) return;
-    const fromId = this.nodeStack[this.nodeStack.length - 1];
-    if (!fromId) return;
-
-    const className = extractInstantiationClassName(node, this.source);
-
-    if (className) {
-      this.unresolvedReferences.push({
-        fromNodeId: fromId,
-        referenceName: className,
-        referenceKind: 'instantiates',
-        line: node.startPosition.row + 1,
-        column: node.startPosition.column,
-      });
-    }
-  }
-
-  /**
-   * Scan `declNode` and its preceding siblings (within the parent's
-   * named children) for decorator nodes, emitting a `decorates`
-   * reference from `decoratedId` to each decorator's function name.
-   *
-   * Why preceding siblings: in TypeScript, `@Foo class Bar {}` parses
-   * as an `export_statement` (or top-level wrapper) with the
-   * `decorator` as a child *before* the `class_declaration` — so the
-   * decorator isn't a child of the class itself. For methods/
-   * properties, the decorator IS a direct child of the declaration,
-   * so we also scan declNode.namedChildren.
-   *
-   * Idempotent across grammars: if neither location yields decorators
-   * (most non-decorator-using languages), the function is a no-op.
-   */
-  private extractDecoratorsFor(declNode: SyntaxNode, decoratedId: string): void {
-    extractDecoratorReferences(
-      declNode,
-      decoratedId,
-      this.source,
-      (ref) => this.unresolvedReferences.push(ref)
-    );
-  }
-
-  /**
-   * Visit function body and extract calls (and structural nodes).
-   *
-   * In addition to call expressions, this also detects class/struct/enum
-   * definitions inside function bodies. This handles two cases:
-   *   1. Local class/struct/enum definitions (valid in C++, Java, etc.)
-   *   2. C++ macro misparsing — macros like NLOHMANN_JSON_NAMESPACE_BEGIN cause
-   *      tree-sitter to interpret the namespace block as a function_definition,
-   *      hiding real class/struct/enum nodes inside the "function body".
-   */
-  private visitFunctionBody(body: SyntaxNode, _functionId: string): void {
-    if (!this.extractor) return;
-
-    const visitForCallsAndStructure = (node: SyntaxNode): void => {
-      const nodeType = node.type;
-
-      if (this.extractor!.callTypes.includes(nodeType)) {
-        this.extractCall(node);
-      } else if (isInstantiationNodeType(nodeType)) {
-        // `new Foo()` inside a function body — emit an `instantiates`
-        // reference. Without this branch the body walker only knew
-        // about `call_expression`, so constructor invocations
-        // produced no graph edges at all.
-        this.extractInstantiation(node);
-      } else if (this.extractor!.extractBareCall) {
-        const calleeName = this.extractor!.extractBareCall(node, this.source);
-        if (calleeName && this.nodeStack.length > 0) {
-          const callerId = this.nodeStack[this.nodeStack.length - 1];
-          if (callerId) {
-            this.unresolvedReferences.push({
-              fromNodeId: callerId,
-              referenceName: calleeName,
-              referenceKind: 'calls',
-              line: node.startPosition.row + 1,
-              column: node.startPosition.column,
-            });
-          }
-        }
-      }
-
-      // Extract structural nodes found inside function bodies.
-      // Each extract method visits its own children, so we return after extracting.
-      if (this.extractor!.classTypes.includes(nodeType)) {
-        const classification = this.extractor!.classifyClassNode?.(node) ?? 'class';
-        if (classification === 'struct') this.extractStruct(node);
-        else if (classification === 'enum') this.extractEnum(node);
-        else if (classification === 'interface') this.extractInterface(node);
-        else if (classification === 'trait') this.extractClass(node, 'trait');
-        else this.extractClass(node);
-        return;
-      }
-      if (this.extractor!.structTypes.includes(nodeType)) {
-        this.extractStruct(node);
-        return;
-      }
-      if (this.extractor!.enumTypes.includes(nodeType)) {
-        this.extractEnum(node);
-        return;
-      }
-      if (this.extractor!.interfaceTypes.includes(nodeType)) {
-        this.extractInterface(node);
-        return;
-      }
-
-      for (let i = 0; i < node.namedChildCount; i++) {
-        const child = node.namedChild(i);
-        if (child) {
-          visitForCallsAndStructure(child);
-        }
-      }
-    };
-
-    visitForCallsAndStructure(body);
-  }
-
-  /**
-   * Extract inheritance relationships
-   */
-  private extractInheritance(node: SyntaxNode, classId: string): void {
-    extractInheritanceReferences(
-      node,
-      classId,
-      this.source,
-      (ref) => this.unresolvedReferences.push(ref)
-    );
-  }
-
-  /**
-   * Rust `impl Trait for Type` — creates an implements edge from Type to Trait.
-   * For plain `impl Type { ... }` (no trait), no inheritance edge is needed.
-   */
-  private extractRustImplItem(node: SyntaxNode): void {
-    // Check if this is `impl Trait for Type` by looking for a `for` keyword
-    const hasFor = node.children.some(
-      (c: SyntaxNode) => c.type === 'for' && !c.isNamed
-    );
-    if (!hasFor) return;
-
-    // In `impl Trait for Type`, the type_identifiers are:
-    // first = Trait name, last = implementing Type name
-    // Also handle generic types like `impl<T> Trait for MyStruct<T>`
-    const typeIdents = node.namedChildren.filter(
-      (c: SyntaxNode) => c.type === 'type_identifier' || c.type === 'generic_type' || c.type === 'scoped_type_identifier'
-    );
-    if (typeIdents.length < 2) return;
-
-    const traitNode = typeIdents[0]!;
-    const typeNode = typeIdents[typeIdents.length - 1]!;
-
-    // Get the trait name (handle scoped paths like std::fmt::Display)
-    const traitName = traitNode.type === 'scoped_type_identifier'
-      ? this.source.substring(traitNode.startIndex, traitNode.endIndex)
-      : getNodeText(traitNode, this.source);
-
-    // Get the implementing type name (extract inner type_identifier for generics)
-    let typeName: string;
-    if (typeNode.type === 'generic_type') {
-      const inner = typeNode.namedChildren.find(
-        (c: SyntaxNode) => c.type === 'type_identifier'
-      );
-      typeName = inner ? getNodeText(inner, this.source) : getNodeText(typeNode, this.source);
-    } else {
-      typeName = getNodeText(typeNode, this.source);
-    }
-
-    // Find the struct/type node for the implementing type
-    const typeNodeId = this.findNodeByName(typeName);
-    if (typeNodeId) {
-      this.unresolvedReferences.push({
-        fromNodeId: typeNodeId,
-        referenceName: traitName,
-        referenceKind: 'implements',
-        line: traitNode.startPosition.row + 1,
-        column: traitNode.startPosition.column,
-      });
-    }
-  }
-
-  /**
-   * Find a previously-extracted node by name (used for back-references like impl blocks)
-   */
-  private findNodeByName(name: string): string | undefined {
-    for (const node of this.nodes) {
-      if (node.name === name && (node.kind === 'struct' || node.kind === 'enum' || node.kind === 'class')) {
-        return node.id;
-      }
-    }
-    return undefined;
-  }
 
 }

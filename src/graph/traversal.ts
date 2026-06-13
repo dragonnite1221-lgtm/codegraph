@@ -6,6 +6,12 @@
 
 import { Node, Edge, Subgraph, TraversalOptions, EdgeKind } from '../types';
 import { QueryBuilder } from '../db/queries';
+import { computeImpactRadius } from './impact';
+import {
+  computeTypeHierarchy,
+  getAncestors,
+  getChildren,
+} from './hierarchy';
 
 /**
  * Default traversal options
@@ -351,75 +357,7 @@ export class GraphTraverser {
    * @returns Subgraph containing the type hierarchy
    */
   getTypeHierarchy(nodeId: string): Subgraph {
-    const focalNode = this.queries.getNodeById(nodeId);
-    if (!focalNode) {
-      return { nodes: new Map(), edges: [], roots: [] };
-    }
-
-    const nodes = new Map<string, Node>();
-    const edges: Edge[] = [];
-    const visited = new Set<string>();
-
-    // Add focal node
-    nodes.set(focalNode.id, focalNode);
-
-    // Get ancestors (what this extends/implements)
-    this.getTypeAncestors(nodeId, nodes, edges, visited);
-
-    // Get descendants (what extends/implements this)
-    this.getTypeDescendants(nodeId, nodes, edges, visited);
-
-    return {
-      nodes,
-      edges,
-      roots: [nodeId],
-    };
-  }
-
-  private getTypeAncestors(
-    nodeId: string,
-    nodes: Map<string, Node>,
-    edges: Edge[],
-    visited: Set<string>
-  ): void {
-    if (visited.has(nodeId)) {
-      return;
-    }
-    visited.add(nodeId);
-
-    const outgoingEdges = this.queries.getOutgoingEdges(nodeId, ['extends', 'implements']);
-
-    for (const edge of outgoingEdges) {
-      const parentNode = this.queries.getNodeById(edge.target);
-      if (parentNode && !nodes.has(parentNode.id)) {
-        nodes.set(parentNode.id, parentNode);
-        edges.push(edge);
-        this.getTypeAncestors(parentNode.id, nodes, edges, visited);
-      }
-    }
-  }
-
-  private getTypeDescendants(
-    nodeId: string,
-    nodes: Map<string, Node>,
-    edges: Edge[],
-    visited: Set<string>
-  ): void {
-    if (visited.has(nodeId)) {
-      return;
-    }
-    visited.add(nodeId);
-
-    const incomingEdges = this.queries.getIncomingEdges(nodeId, ['extends', 'implements']);
-
-    for (const edge of incomingEdges) {
-      const childNode = this.queries.getNodeById(edge.source);
-      if (childNode && !nodes.has(childNode.id)) {
-        nodes.set(childNode.id, childNode);
-        edges.push(edge);
-        this.getTypeDescendants(childNode.id, nodes, edges, visited);
-      }
-    }
+    return computeTypeHierarchy(this.queries, nodeId);
   }
 
   /**
@@ -454,71 +392,7 @@ export class GraphTraverser {
    * @returns Subgraph containing potentially impacted nodes
    */
   getImpactRadius(nodeId: string, maxDepth: number = 3): Subgraph {
-    const focalNode = this.queries.getNodeById(nodeId);
-    if (!focalNode) {
-      return { nodes: new Map(), edges: [], roots: [] };
-    }
-
-    const nodes = new Map<string, Node>();
-    const edges: Edge[] = [];
-    const visited = new Set<string>();
-
-    // Add focal node
-    nodes.set(focalNode.id, focalNode);
-
-    // Traverse incoming edges to find all dependents
-    this.getImpactRecursive(nodeId, maxDepth, 0, nodes, edges, visited);
-
-    return {
-      nodes,
-      edges,
-      roots: [nodeId],
-    };
-  }
-
-  private getImpactRecursive(
-    nodeId: string,
-    maxDepth: number,
-    currentDepth: number,
-    nodes: Map<string, Node>,
-    edges: Edge[],
-    visited: Set<string>
-  ): void {
-    if (currentDepth >= maxDepth || visited.has(nodeId)) {
-      return;
-    }
-    visited.add(nodeId);
-
-    // For container nodes (classes, interfaces, structs, etc.), also traverse
-    // into their children so that callers of contained methods appear in impact
-    const focalNode = this.queries.getNodeById(nodeId);
-    if (focalNode) {
-      const containerKinds = new Set(['class', 'interface', 'struct', 'trait', 'protocol', 'module', 'enum']);
-      if (containerKinds.has(focalNode.kind)) {
-        const containsEdges = this.queries.getOutgoingEdges(nodeId, ['contains']);
-        for (const edge of containsEdges) {
-          const childNode = this.queries.getNodeById(edge.target);
-          if (childNode && !visited.has(childNode.id)) {
-            nodes.set(childNode.id, childNode);
-            edges.push(edge);
-            // Recurse into children at the same depth (they're part of the same symbol)
-            this.getImpactRecursive(childNode.id, maxDepth, currentDepth, nodes, edges, visited);
-          }
-        }
-      }
-    }
-
-    // Get all incoming edges (things that depend on this node)
-    const incomingEdges = this.queries.getIncomingEdges(nodeId);
-
-    for (const edge of incomingEdges) {
-      const sourceNode = this.queries.getNodeById(edge.source);
-      if (sourceNode && !nodes.has(sourceNode.id)) {
-        nodes.set(sourceNode.id, sourceNode);
-        edges.push(edge);
-        this.getImpactRecursive(sourceNode.id, maxDepth, currentDepth + 1, nodes, edges, visited);
-      }
-    }
+    return computeImpactRadius(this.queries, nodeId, maxDepth);
   }
 
   /**
@@ -588,35 +462,7 @@ export class GraphTraverser {
    * @returns Array of ancestor nodes from immediate parent to root
    */
   getAncestors(nodeId: string): Node[] {
-    const ancestors: Node[] = [];
-    const visited = new Set<string>();
-    let currentId = nodeId;
-
-    while (true) {
-      if (visited.has(currentId)) {
-        break;
-      }
-      visited.add(currentId);
-
-      // Look for 'contains' edges pointing to this node
-      const containingEdges = this.queries.getIncomingEdges(currentId, ['contains']);
-
-      const firstEdge = containingEdges[0];
-      if (!firstEdge) {
-        break;
-      }
-
-      // Typically there should be at most one containing parent
-      const parentNode = this.queries.getNodeById(firstEdge.source);
-      if (parentNode) {
-        ancestors.push(parentNode);
-        currentId = parentNode.id;
-      } else {
-        break;
-      }
-    }
-
-    return ancestors;
+    return getAncestors(this.queries, nodeId);
   }
 
   /**
@@ -626,16 +472,6 @@ export class GraphTraverser {
    * @returns Array of child nodes
    */
   getChildren(nodeId: string): Node[] {
-    const containsEdges = this.queries.getOutgoingEdges(nodeId, ['contains']);
-    const children: Node[] = [];
-
-    for (const edge of containsEdges) {
-      const childNode = this.queries.getNodeById(edge.target);
-      if (childNode) {
-        children.push(childNode);
-      }
-    }
-
-    return children;
+    return getChildren(this.queries, nodeId);
   }
 }

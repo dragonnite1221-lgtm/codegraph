@@ -30,13 +30,29 @@ function mkTmpDir(label: string): string {
 // `os.homedir()` reads first. Same trick the rest of the suite uses
 // when it needs a mock home.
 function setHome(dir: string): { restore: () => void } {
-  const prev = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+  // Capture HOME/USERPROFILE *and* the config-dir overrides the opencode target
+  // honours (XDG_CONFIG_HOME on POSIX, APPDATA on Windows). If a CI runner has
+  // XDG_CONFIG_HOME set, the installer would write outside the mock home and the
+  // global-install assertions would fail — so clear them for the duration.
+  const prev = {
+    HOME: process.env.HOME,
+    USERPROFILE: process.env.USERPROFILE,
+    XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+    APPDATA: process.env.APPDATA,
+  };
   process.env.HOME = dir;
   process.env.USERPROFILE = dir;
+  delete process.env.XDG_CONFIG_HOME;
+  delete process.env.APPDATA;
+  const restoreVar = (k: 'HOME' | 'USERPROFILE' | 'XDG_CONFIG_HOME' | 'APPDATA') => {
+    if (prev[k] === undefined) delete process.env[k]; else process.env[k] = prev[k];
+  };
   return {
     restore() {
-      if (prev.HOME === undefined) delete process.env.HOME; else process.env.HOME = prev.HOME;
-      if (prev.USERPROFILE === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = prev.USERPROFILE;
+      restoreVar('HOME');
+      restoreVar('USERPROFILE');
+      restoreVar('XDG_CONFIG_HOME');
+      restoreVar('APPDATA');
     },
   };
 }

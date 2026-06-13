@@ -63,4 +63,36 @@
 - [ ] `npm test` — CI(Linux)와 macOS 모두 실패 0건
 - [ ] `EVAL_CODEBASE=/path/to/indexed/codebase npm run eval` 점수 리팩토링 전후 동등 이상
 - [ ] installer 변경 시 installer-targets 계약 테스트 + CHANGELOG 동반 확인
+- [x] MCP 도구 변경 시 지침 3종 파일 도구 목록 일치 (이번 분해는 MCP 동작 무변경)
+
+## 5. 진행 현황 — Phase 2 완료 (2026-06-13)
+
+거대 파일(500줄 초과) 11개 중 **10개를 임계 아래로 분해 완료**. 모든 변경은
+재export/위임으로 공개 API·import 경로를 보존(blast radius 0)했고, 전 단계
+`npm test` 736→738 통과 + 타입체크 통과. 추출/스코어링 계열은 **TypeScript +
+Python 두 언어 그래프-동일성 하니스로 바이트 단위 동작 보존을 검증**했다
+(`__tests__/graph-snapshot.test.ts`로 정식 테스트화).
+
+| 파일 | 전→후 | 분리 모듈 |
+|---|---|---|
+| extraction/tree-sitter.ts | 1199→446 | `extractors-decl.ts`, `extractors-misc.ts`, `extractors.ts`(barrel) — extractX 19개 함수 분리 |
+| context/index.ts | 1134→239 | `context-search.ts`, `context-helpers.ts` — findRelevantContext 분할 |
+| index.ts | 988→826 | `lifecycle.ts`, `indexing-operations.ts` (※ 공개 API 파사드라 의도적으로 500↑ 유지) |
+| extraction/index.ts | 943→493 | `parse-worker-pool.ts`, `bulk-parse.ts`, `bulk-retry.ts`, `detection-context.ts`, `parse-result-predicates.ts` |
+| types.ts | 841→479 | `config-types.ts`, `context-types.ts` |
+| resolution/index.ts | 768→438 | `resolution-context.ts`, `builtin-symbols.ts`, `edge-builder.ts` |
+| resolution/import-resolver.ts | 731→359 | `import-extractors.ts` |
+| graph/traversal.ts | 641→477 | `impact.ts`, `hierarchy.ts` |
+| utils.ts | 566→73 | `path-security.ts`, `concurrency.ts` |
+| db/search-queries.ts | 548→273 | `search-internals.ts` |
+| mcp/explore-output.ts | 518→348 | `explore-clusters.ts` |
+| db/queries.ts | 722→498 | `node-queries.ts` |
+
+> 검증 비고: 계획서가 권장한 `EVAL_CODEBASE … npm run eval`은 Elasticsearch(Java)
+> 코드베이스를 전제하므로 대체로, 동일 코드베이스를 재인덱싱해 그래프(노드/엣지
+> 전수 + 검색/컨텍스트 결과)가 바이트 동일한지 비교하는 하니스로 검증했다 —
+> 순수 리팩토링에는 eval 점수보다 강한 보장이다.
+
+> 잔여: `index.ts`(826)는 CLAUDE.md가 명시한 단일 공개 API 파사드라 의도적으로
+> 유지. mcp/tools.ts·bin/codegraph.ts는 이전 작업에서 이미 임계 아래로 분해됨.
 - [ ] MCP 도구 변경 시 지침 3종 파일 도구 목록 일치
