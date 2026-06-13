@@ -12,7 +12,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ['18', '20', '22']
+        # The published package supports Node >=18, but the dev test runner
+        # (vitest 4 / rolldown) needs node:util `styleText`, available on
+        # Node 20.12+/22. So tests run on 20 and 22.
+        node: ['20', '22']
     steps:
       - uses: actions/checkout@v4
 
