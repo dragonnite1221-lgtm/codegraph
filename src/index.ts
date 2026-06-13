@@ -23,14 +23,12 @@ import {
   BuildContextOptions,
   FindRelevantContextOptions,
 } from './types';
-import { DatabaseConnection, getDatabasePath } from './db';
+import { DatabaseConnection } from './db';
 import { QueryBuilder, type FileQueryOptions } from './db/queries';
-import { loadConfig, saveConfig, createDefaultConfig } from './config';
+import { saveConfig } from './config';
 import {
   isInitialized,
-  createDirectory,
   removeDirectory,
-  validateDirectory,
 } from './directory';
 import {
   ExtractionOrchestrator,
@@ -49,6 +47,7 @@ import { GraphTraverser, GraphQueryManager } from './graph';
 import { ContextBuilder, createContextBuilder } from './context';
 import { Mutex, FileLock } from './utils';
 import { FileWatcher, WatchOptions } from './sync';
+import { prepareNewProject, openExistingProject } from './lifecycle';
 
 // Re-export types for consumers
 export * from './types';
@@ -186,26 +185,7 @@ export class CodeGraph {
     await initGrammars();
     const resolvedRoot = path.resolve(projectRoot);
 
-    // Check if already initialized
-    if (isInitialized(resolvedRoot)) {
-      throw new Error(`CodeGraph already initialized in ${resolvedRoot}`);
-    }
-
-    // Create directory structure
-    createDirectory(resolvedRoot);
-
-    // Create and save configuration
-    const config = createDefaultConfig(resolvedRoot);
-    if (options.config) {
-      Object.assign(config, options.config);
-    }
-    saveConfig(resolvedRoot, config);
-
-    // Initialize database
-    const dbPath = getDatabasePath(resolvedRoot);
-    const db = DatabaseConnection.initialize(dbPath);
-    const queries = new QueryBuilder(db.getDb());
-
+    const { db, queries, config } = prepareNewProject(resolvedRoot, options.config);
     const instance = new CodeGraph(db, queries, config, resolvedRoot);
 
     // Run initial indexing if requested
@@ -221,27 +201,7 @@ export class CodeGraph {
    */
   static initSync(projectRoot: string, options: Omit<InitOptions, 'index' | 'onProgress'> = {}): CodeGraph {
     const resolvedRoot = path.resolve(projectRoot);
-
-    // Check if already initialized
-    if (isInitialized(resolvedRoot)) {
-      throw new Error(`CodeGraph already initialized in ${resolvedRoot}`);
-    }
-
-    // Create directory structure
-    createDirectory(resolvedRoot);
-
-    // Create and save configuration
-    const config = createDefaultConfig(resolvedRoot);
-    if (options.config) {
-      Object.assign(config, options.config);
-    }
-    saveConfig(resolvedRoot, config);
-
-    // Initialize database
-    const dbPath = getDatabasePath(resolvedRoot);
-    const db = DatabaseConnection.initialize(dbPath);
-    const queries = new QueryBuilder(db.getDb());
-
+    const { db, queries, config } = prepareNewProject(resolvedRoot, options.config);
     return new CodeGraph(db, queries, config, resolvedRoot);
   }
 
@@ -256,25 +216,7 @@ export class CodeGraph {
     await initGrammars();
     const resolvedRoot = path.resolve(projectRoot);
 
-    // Check if initialized
-    if (!isInitialized(resolvedRoot)) {
-      throw new Error(`CodeGraph not initialized in ${resolvedRoot}. Run init() first.`);
-    }
-
-    // Validate directory structure
-    const validation = validateDirectory(resolvedRoot);
-    if (!validation.valid) {
-      throw new Error(`Invalid CodeGraph directory: ${validation.errors.join(', ')}`);
-    }
-
-    // Load configuration
-    const config = loadConfig(resolvedRoot);
-
-    // Open database
-    const dbPath = getDatabasePath(resolvedRoot);
-    const db = DatabaseConnection.open(dbPath);
-    const queries = new QueryBuilder(db.getDb());
-
+    const { db, queries, config } = openExistingProject(resolvedRoot);
     const instance = new CodeGraph(db, queries, config, resolvedRoot);
 
     // Sync if requested
@@ -290,26 +232,7 @@ export class CodeGraph {
    */
   static openSync(projectRoot: string): CodeGraph {
     const resolvedRoot = path.resolve(projectRoot);
-
-    // Check if initialized
-    if (!isInitialized(resolvedRoot)) {
-      throw new Error(`CodeGraph not initialized in ${resolvedRoot}. Run init() first.`);
-    }
-
-    // Validate directory structure
-    const validation = validateDirectory(resolvedRoot);
-    if (!validation.valid) {
-      throw new Error(`Invalid CodeGraph directory: ${validation.errors.join(', ')}`);
-    }
-
-    // Load configuration
-    const config = loadConfig(resolvedRoot);
-
-    // Open database
-    const dbPath = getDatabasePath(resolvedRoot);
-    const db = DatabaseConnection.open(dbPath);
-    const queries = new QueryBuilder(db.getDb());
-
+    const { db, queries, config } = openExistingProject(resolvedRoot);
     return new CodeGraph(db, queries, config, resolvedRoot);
   }
 
