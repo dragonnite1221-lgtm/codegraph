@@ -43,6 +43,13 @@ import {
   runGetFilteredFiles,
   type FileQueryOptions,
 } from './file-queries';
+import {
+  runDeleteResolvedReferences,
+  runDeleteSpecificResolvedReferences,
+  runGetUnresolvedReferences,
+  runGetUnresolvedReferencesByFiles,
+  type ResolvedReferenceKey,
+} from './unresolved-ref-queries';
 
 export type { FileQueryOptions } from './file-queries';
 
@@ -710,11 +717,7 @@ export class QueryBuilder {
    * Get all unresolved references
    */
   getUnresolvedReferences(): UnresolvedReference[] {
-    const rows = this.withStatement(
-      'SELECT * FROM unresolved_refs',
-      (stmt) => stmt.all() as UnresolvedRefRow[]
-    );
-    return rows.map(rowToUnresolvedReference);
+    return runGetUnresolvedReferences((sql, fn) => this.withStatement(sql, fn));
   }
 
   /**
@@ -771,15 +774,10 @@ export class QueryBuilder {
    * Uses the idx_unresolved_file_path index for efficient lookup.
    */
   getUnresolvedReferencesByFiles(filePaths: string[]): UnresolvedReference[] {
-    if (filePaths.length === 0) return [];
-
-    const placeholders = filePaths.map(() => '?').join(',');
-    const rows = this.withStatement(
-      `SELECT * FROM unresolved_refs WHERE file_path IN (${placeholders})`,
-      (stmt) => stmt.all(...filePaths) as UnresolvedRefRow[]
+    return runGetUnresolvedReferencesByFiles(
+      (sql, fn) => this.withStatement(sql, fn),
+      filePaths
     );
-
-    return rows.map(rowToUnresolvedReference);
   }
 
   /**
@@ -793,33 +791,15 @@ export class QueryBuilder {
    * Delete resolved references by their IDs
    */
   deleteResolvedReferences(fromNodeIds: string[]): void {
-    if (fromNodeIds.length === 0) return;
-    const placeholders = fromNodeIds.map(() => '?').join(',');
-    this.withStatement(
-      `DELETE FROM unresolved_refs WHERE from_node_id IN (${placeholders})`,
-      (stmt) => stmt.run(...fromNodeIds)
-    );
+    runDeleteResolvedReferences((sql, fn) => this.withStatement(sql, fn), fromNodeIds);
   }
 
   /**
    * Delete specific resolved references by (fromNodeId, referenceName, referenceKind) tuples.
    * More precise than deleteResolvedReferences — only removes refs that were actually resolved.
    */
-  deleteSpecificResolvedReferences(refs: Array<{ fromNodeId: string; referenceName: string; referenceKind: string }>): void {
-    if (refs.length === 0) return;
-    const stmt = this.db.prepare(
-      'DELETE FROM unresolved_refs WHERE from_node_id = ? AND reference_name = ? AND reference_kind = ?'
-    );
-    const deleteMany = this.db.transaction((items: typeof refs) => {
-      for (const ref of items) {
-        stmt.run(ref.fromNodeId, ref.referenceName, ref.referenceKind);
-      }
-    });
-    try {
-      deleteMany(refs);
-    } finally {
-      stmt.finalize?.();
-    }
+  deleteSpecificResolvedReferences(refs: ResolvedReferenceKey[]): void {
+    runDeleteSpecificResolvedReferences(this.db, refs);
   }
 
   // ===========================================================================

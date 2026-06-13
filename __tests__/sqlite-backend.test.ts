@@ -18,7 +18,7 @@ import {
 import { DatabaseConnection } from '../src/db';
 import { QueryBuilder } from '../src/db/queries';
 import { CodeGraph } from '../src';
-import type { FileRecord } from '../src/types';
+import type { FileRecord, Node, UnresolvedReference } from '../src/types';
 
 describe('buildWasmFallbackBanner — fix-recipe content', () => {
   it('includes the macOS / Linux / cross-platform fix commands', () => {
@@ -193,6 +193,92 @@ describe('QueryBuilder file queries', () => {
     try {
       expect(queries.getAllFiles().map(file => file.path)).toEqual(['src/a.ts', 'src/b.ts']);
       expect(queries.getAllFiles({ limit: 1 }).map(file => file.path)).toEqual(['src/a.ts']);
+    } finally {
+      conn.close();
+    }
+  });
+});
+
+describe('QueryBuilder unresolved reference queries', () => {
+  let dir: string;
+
+  function nodeRecord(id: string, filePath: string): Node {
+    return {
+      id,
+      kind: 'function',
+      name: id,
+      qualifiedName: id,
+      filePath,
+      language: 'typescript',
+      startLine: 1,
+      endLine: 1,
+      startColumn: 0,
+      endColumn: 1,
+      updatedAt: 1,
+    };
+  }
+
+  function unresolvedRef(
+    fromNodeId: string,
+    referenceName: string,
+    filePath: string
+  ): UnresolvedReference {
+    return {
+      fromNodeId,
+      referenceName,
+      referenceKind: 'calls',
+      line: 1,
+      column: 1,
+      filePath,
+      language: 'typescript',
+    };
+  }
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-unresolved-query-'));
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(dir)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads unresolved refs by file scope and deletes resolved refs precisely', () => {
+    const dbPath = path.join(dir, 'test.db');
+    const conn = DatabaseConnection.initialize(dbPath);
+    const queries = new QueryBuilder(conn.getDb());
+
+    queries.insertNode(nodeRecord('from-a', 'src/a.ts'));
+    queries.insertNode(nodeRecord('from-b', 'src/b.ts'));
+    queries.insertUnresolvedRefsBatch([
+      unresolvedRef('from-a', 'targetA', 'src/a.ts'),
+      unresolvedRef('from-b', 'targetB', 'src/b.ts'),
+      unresolvedRef('from-b', 'targetC', 'src/b.ts'),
+    ]);
+
+    try {
+      expect(queries.getUnresolvedReferences().map(ref => ref.referenceName)).toEqual([
+        'targetA',
+        'targetB',
+        'targetC',
+      ]);
+      expect(
+        queries.getUnresolvedReferencesByFiles(['src/b.ts']).map(ref => ref.referenceName)
+      ).toEqual(['targetB', 'targetC']);
+
+      queries.deleteSpecificResolvedReferences([
+        { fromNodeId: 'from-b', referenceName: 'targetB', referenceKind: 'calls' },
+      ]);
+      expect(queries.getUnresolvedReferences().map(ref => ref.referenceName)).toEqual([
+        'targetA',
+        'targetC',
+      ]);
+
+      queries.deleteResolvedReferences(['from-a']);
+      expect(queries.getUnresolvedReferences().map(ref => ref.referenceName)).toEqual([
+        'targetC',
+      ]);
     } finally {
       conn.close();
     }
