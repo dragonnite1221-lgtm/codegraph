@@ -10,7 +10,6 @@ import {
   Node,
   Edge,
   NodeKind,
-  EdgeKind,
   Subgraph,
   TaskContext,
   TaskInput,
@@ -30,7 +29,7 @@ import {
   generateSummary,
   getEntryPoints,
   getRelatedFiles,
-  resolveImportsToDefinitions,
+  assembleContextSubgraph,
 } from './context-helpers';
 
 
@@ -582,235 +581,12 @@ export class ContextBuilder {
       }
     }
 
-    // Final sort and truncation — all search channels (exact, text, CamelCase,
-    // compound) have now contributed. Sort by score so multi-term matches from
-    // later steps can outrank dampened single-term matches from earlier steps.
-    searchResults.sort((a, b) => b.score - a.score);
-    searchResults = searchResults.slice(0, opts.searchLimit * 3);
-
-    // Filter by minimum score
-    let filteredResults = searchResults.filter((r) => r.score >= opts.minScore);
-
-    // Resolve imports/exports to their actual definitions
-    // If someone searches "terminal" and finds `import { TerminalPanel }`,
-    // they want the TerminalPanel class, not the import statement
-    filteredResults = resolveImportsToDefinitions(filteredResults, this.queries);
-
-    // Cap entry points so traversal budget isn't spread too thin.
-    // With 36 entry points and maxNodes=120, each gets only 3 nodes — useless.
-    // Cap to searchLimit so each entry point gets a meaningful traversal budget.
-    if (filteredResults.length > opts.searchLimit) {
-      filteredResults = filteredResults.slice(0, opts.searchLimit);
-    }
-
-    // Add entry points to subgraph
-    for (const result of filteredResults) {
-      nodes.set(result.node.id, result.node);
-      roots.push(result.node.id);
-    }
-
-    // Expand type hierarchy for class/interface entry points.
-    // BFS often exhausts its per-entry-point budget on contained methods
-    // before reaching extends/implements neighbors. This dedicated step
-    // ensures subclasses and superclasses always appear in results.
-    // Budget: up to maxNodes/4 hierarchy nodes to avoid flooding.
-    const typeHierarchyKinds = new Set<string>(['class', 'interface', 'struct', 'trait', 'protocol']);
-    const maxHierarchyNodes = Math.ceil(opts.maxNodes / 4);
-    let hierarchyNodesAdded = 0;
-    for (const result of filteredResults) {
-      if (hierarchyNodesAdded >= maxHierarchyNodes) break;
-      if (typeHierarchyKinds.has(result.node.kind)) {
-        const hierarchy = this.traverser.getTypeHierarchy(result.node.id);
-        for (const [id, node] of hierarchy.nodes) {
-          if (!nodes.has(id)) {
-            nodes.set(id, node);
-            hierarchyNodesAdded++;
-          }
-        }
-        for (const edge of hierarchy.edges) {
-          const exists = edges.some(
-            (e) => e.source === edge.source && e.target === edge.target && e.kind === edge.kind
-          );
-          if (!exists) {
-            edges.push(edge);
-          }
-        }
-      }
-    }
-
-    // Pass 2: expand hierarchy of newly-discovered parent types to find siblings.
-    // E.g., InternalEngine → Engine (parent, from pass 1) → ReadOnlyEngine (sibling).
-    if (hierarchyNodesAdded > 0) {
-      const pass2Candidates = [...nodes.values()].filter(
-        n => typeHierarchyKinds.has(n.kind) && !roots.includes(n.id)
-      );
-      for (const candidate of pass2Candidates) {
-        if (hierarchyNodesAdded >= maxHierarchyNodes) break;
-        const siblingHierarchy = this.traverser.getTypeHierarchy(candidate.id);
-        for (const [id, node] of siblingHierarchy.nodes) {
-          if (!nodes.has(id) && hierarchyNodesAdded < maxHierarchyNodes) {
-            nodes.set(id, node);
-            hierarchyNodesAdded++;
-          }
-        }
-        for (const edge of siblingHierarchy.edges) {
-          if (nodes.has(edge.source) && nodes.has(edge.target)) {
-            const exists = edges.some(
-              (e) => e.source === edge.source && e.target === edge.target && e.kind === edge.kind
-            );
-            if (!exists) {
-              edges.push(edge);
-            }
-          }
-        }
-      }
-    }
-
-    // Traverse from each entry point
-    for (const result of filteredResults) {
-      const traversalResult = this.traverser.traverseBFS(result.node.id, {
-        maxDepth: opts.traversalDepth,
-        edgeKinds: opts.edgeKinds && opts.edgeKinds.length > 0 ? opts.edgeKinds : undefined,
-        nodeKinds: opts.nodeKinds && opts.nodeKinds.length > 0 ? opts.nodeKinds : undefined,
-        direction: 'both',
-        limit: Math.ceil(opts.maxNodes / Math.max(1, filteredResults.length)),
-      });
-
-      // Merge nodes
-      for (const [id, node] of traversalResult.nodes) {
-        if (!nodes.has(id)) {
-          nodes.set(id, node);
-        }
-      }
-
-      // Merge edges (avoid duplicates)
-      for (const edge of traversalResult.edges) {
-        const exists = edges.some(
-          (e) => e.source === edge.source && e.target === edge.target && e.kind === edge.kind
-        );
-        if (!exists) {
-          edges.push(edge);
-        }
-      }
-    }
-
-    // Trim to max nodes if needed
-    let finalNodes = nodes;
-    let finalEdges = edges;
-    if (nodes.size > opts.maxNodes) {
-      // Prioritize entry points and their direct neighbors
-      const priorityIds = new Set(roots);
-      for (const edge of edges) {
-        if (priorityIds.has(edge.source)) {
-          priorityIds.add(edge.target);
-        }
-        if (priorityIds.has(edge.target)) {
-          priorityIds.add(edge.source);
-        }
-      }
-
-      // Keep priority nodes, then fill remaining slots
-      finalNodes = new Map<string, Node>();
-      for (const id of priorityIds) {
-        const node = nodes.get(id);
-        if (node && finalNodes.size < opts.maxNodes) {
-          finalNodes.set(id, node);
-        }
-      }
-
-      // Fill remaining from other nodes
-      for (const [id, node] of nodes) {
-        if (finalNodes.size >= opts.maxNodes) break;
-        if (!finalNodes.has(id)) {
-          finalNodes.set(id, node);
-        }
-      }
-
-      // Filter edges to only include kept nodes
-      finalEdges = edges.filter(
-        (e) => finalNodes.has(e.source) && finalNodes.has(e.target)
-      );
-    }
-
-    // Per-file diversity cap: prevent any single file from monopolizing the
-    // node budget. When BFS traverses from a method, it follows `contains`
-    // to the parent class, then back down to all sibling methods. With
-    // multiple entry points in the same class, one file can consume 30-40%
-    // of maxNodes. Cap each file to ~20% to ensure cross-file diversity.
-    const maxPerFile = Math.max(5, Math.ceil(opts.maxNodes * 0.2));
-    const fileCounts = new Map<string, string[]>();
-    for (const [id, node] of finalNodes) {
-      const ids = fileCounts.get(node.filePath) || [];
-      ids.push(id);
-      fileCounts.set(node.filePath, ids);
-    }
-    const rootSet = new Set(roots);
-    for (const [, nodeIds] of fileCounts) {
-      if (nodeIds.length <= maxPerFile) continue;
-      // Sort: entry points first, then classes/interfaces, then others
-      const kindPriority: Record<string, number> = {
-        class: 3, interface: 3, struct: 3, trait: 3, protocol: 3, enum: 3,
-        method: 1, function: 1, property: 0, field: 0, variable: 0,
-      };
-      nodeIds.sort((a, b) => {
-        const aRoot = rootSet.has(a) ? 10 : 0;
-        const bRoot = rootSet.has(b) ? 10 : 0;
-        const aKind = kindPriority[finalNodes.get(a)!.kind] ?? 0;
-        const bKind = kindPriority[finalNodes.get(b)!.kind] ?? 0;
-        return (bRoot + bKind) - (aRoot + aKind);
-      });
-      // Remove excess nodes (keep the highest-priority ones)
-      for (const id of nodeIds.slice(maxPerFile)) {
-        finalNodes.delete(id);
-      }
-    }
-    // Non-production node cap: limit test/sample/integration/example files to
-    // at most 15% of the budget. Many codebases have dozens of near-identical
-    // test implementations (e.g., 6 Guard classes in integration tests) that
-    // individually survive score dampening but collectively flood the result.
-    // Test entry points are NOT exempt — they should be evicted too.
-    if (!isTestQuery) {
-      const maxNonProd = Math.max(3, Math.ceil(opts.maxNodes * 0.15));
-      const nonProdIds: string[] = [];
-      for (const [id, node] of finalNodes) {
-        if (isTestFile(node.filePath)) {
-          nonProdIds.push(id);
-        }
-      }
-      if (nonProdIds.length > maxNonProd) {
-        for (const id of nonProdIds.slice(maxNonProd)) {
-          finalNodes.delete(id);
-          // Also remove from roots — test file entry points shouldn't anchor results
-          const rootIdx = roots.indexOf(id);
-          if (rootIdx !== -1) roots.splice(rootIdx, 1);
-        }
-      }
-    }
-
-    // Re-filter edges after per-file and non-production caps
-    finalEdges = finalEdges.filter(
-      (e) => finalNodes.has(e.source) && finalNodes.has(e.target)
-    );
-
-    // Edge recovery: BFS with many entry points leaves most nodes disconnected.
-    // Discover edges between already-selected nodes to recover connectivity.
-    const recoveryKinds: EdgeKind[] = ['calls', 'extends', 'implements', 'references', 'overrides'];
-    const recoveredEdges = this.queries.findEdgesBetweenNodes(
-      [...finalNodes.keys()],
-      recoveryKinds,
-    );
-    const existingEdgeKeys = new Set(
-      finalEdges.map((e) => `${e.source}:${e.target}:${e.kind}`)
-    );
-    for (const edge of recoveredEdges) {
-      const key = `${edge.source}:${edge.target}:${edge.kind}`;
-      if (!existingEdgeKeys.has(key)) {
-        finalEdges.push(edge);
-        existingEdgeKeys.add(key);
-      }
-    }
-
-    return { nodes: finalNodes, edges: finalEdges, roots };
+    // Assemble the final subgraph from the scored candidates (filter, hierarchy,
+    // BFS traversal, budget trimming, edge recovery).
+    return assembleContextSubgraph(searchResults, opts, isTestQuery, {
+      traverser: this.traverser,
+      queries: this.queries,
+    });
   }
 
   /**
