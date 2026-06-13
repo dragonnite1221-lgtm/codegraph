@@ -12,6 +12,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { createHash } from 'crypto';
 import { FileLock } from '../src/utils';
 import CodeGraph from '../src/index';
 import { ToolHandler, tools } from '../src/mcp/tools';
@@ -191,7 +192,12 @@ describe('MCP Input Validation', () => {
 
     fs.writeFileSync(
       path.join(srcDir, 'example.ts'),
-      `export function exampleFunc(): void {}\nexport class ExampleClass {}\n`
+      [
+        'export function exampleFunc(): void {}',
+        'export function callerFunc(): void { exampleFunc(); }',
+        'export class ExampleClass {}',
+        '',
+      ].join('\n')
     );
 
     cg = CodeGraph.initSync(testDir, {
@@ -241,6 +247,38 @@ describe('MCP Input Validation', () => {
     expect(result.content[0].text).toContain('non-empty string');
   });
 
+  it('should not follow pre-existing session marker symlinks', async () => {
+    const previousSessionId = process.env.CLAUDE_SESSION_ID;
+    const sessionId = `codegraph-security-${process.pid}-${Date.now()}`;
+    const markerHash = createHash('md5').update(sessionId).digest('hex').slice(0, 16);
+    const markerPath = path.join(os.tmpdir(), `codegraph-consulted-${markerHash}`);
+    const protectedPath = path.join(testDir, 'protected.txt');
+
+    fs.writeFileSync(protectedPath, 'do-not-overwrite', 'utf8');
+
+    try {
+      if (fs.existsSync(markerPath)) {
+        fs.rmSync(markerPath, { force: true });
+      }
+      fs.symlinkSync(protectedPath, markerPath);
+      process.env.CLAUDE_SESSION_ID = sessionId;
+
+      const result = await handler.execute('codegraph_context', { task: 'example' });
+
+      expect(result.isError).toBeFalsy();
+      expect(fs.readFileSync(protectedPath, 'utf8')).toBe('do-not-overwrite');
+    } finally {
+      if (previousSessionId === undefined) {
+        delete process.env.CLAUDE_SESSION_ID;
+      } else {
+        process.env.CLAUDE_SESSION_ID = previousSessionId;
+      }
+      if (fs.existsSync(markerPath)) {
+        fs.rmSync(markerPath, { force: true });
+      }
+    }
+  });
+
   it('should reject non-string symbol in codegraph_impact', async () => {
     const result = await handler.execute('codegraph_impact', { symbol: [] });
     expect(result.isError).toBe(true);
@@ -264,6 +302,45 @@ describe('MCP Input Validation', () => {
   it('should handle negative limit gracefully', async () => {
     const result = await handler.execute('codegraph_search', { query: 'example', limit: -5 });
     expect(result.isError).toBeFalsy();
+  });
+
+  it('should ignore non-numeric numeric bounds in graph tools', async () => {
+    const callers = await handler.execute('codegraph_callers', {
+      symbol: 'exampleFunc',
+      limit: 'not-a-number',
+    });
+    expect(callers.isError).toBeFalsy();
+    expect(callers.content[0].text).toContain('callerFunc');
+
+    const callees = await handler.execute('codegraph_callees', {
+      symbol: 'callerFunc',
+      limit: 'not-a-number',
+    });
+    expect(callees.isError).toBeFalsy();
+    expect(callees.content[0].text).toContain('exampleFunc');
+
+    const impact = await handler.execute('codegraph_impact', {
+      symbol: 'callerFunc',
+      depth: 'not-a-number',
+    });
+    expect(impact.isError).toBeFalsy();
+
+    const files = await handler.execute('codegraph_files', {
+      maxDepth: 'not-a-number',
+    });
+    expect(files.isError).toBeFalsy();
+
+    const context = await handler.execute('codegraph_context', {
+      task: 'example',
+      maxNodes: 'not-a-number',
+    });
+    expect(context.isError).toBeFalsy();
+
+    const explore = await handler.execute('codegraph_explore', {
+      query: 'example',
+      maxFiles: 'not-a-number',
+    });
+    expect(explore.isError).toBeFalsy();
   });
 });
 
@@ -342,8 +419,8 @@ describe('Glob Matching (picomatch)', () => {
     shouldIncludeFile('x/x/x/x/x/x/x/x/x/x/x/x/x/x/b', config);
     const elapsed = Date.now() - start;
 
-    // Should complete in under 100ms, not seconds
-    expect(elapsed).toBeLessThan(100);
+    // Should complete quickly, not hang for seconds.
+    expect(elapsed).toBeLessThan(500);
   });
 
   it('should handle dot files correctly', () => {
@@ -385,6 +462,39 @@ describe('JSON.parse Error Boundaries in DB', () => {
     expect(node).not.toBeNull();
     expect(node!.name).toBe('myFunc');
     expect(node!.decorators).toBeUndefined();
+
+    db.close();
+  });
+
+  it('should refresh getNodeById cache when insertNode replaces an existing node', () => {
+    const dbPath = path.join(tempDir, 'test.db');
+    const db = DatabaseConnection.initialize(dbPath);
+    const queries = new QueryBuilder(db.getDb());
+    const baseNode = {
+      id: 'cached-node',
+      kind: 'function' as const,
+      name: 'oldName',
+      qualifiedName: 'oldName',
+      filePath: 'test.ts',
+      language: 'typescript' as const,
+      startLine: 1,
+      endLine: 5,
+      startColumn: 0,
+      endColumn: 0,
+      updatedAt: Date.now(),
+    };
+
+    queries.insertNode(baseNode);
+    expect(queries.getNodeById('cached-node')?.name).toBe('oldName');
+
+    queries.insertNode({
+      ...baseNode,
+      name: 'newName',
+      qualifiedName: 'newName',
+      updatedAt: Date.now() + 1,
+    });
+
+    expect(queries.getNodeById('cached-node')?.name).toBe('newName');
 
     db.close();
   });

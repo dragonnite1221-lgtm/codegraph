@@ -1,7 +1,7 @@
 /**
  * Node.js version compatibility check.
  *
- * Node 25.x has a V8 turboshaft WASM JIT Zone allocator bug that
+ * Node 24.x and newer currently expose a V8 turboshaft WASM JIT Zone allocator bug that
  * reliably crashes CodeGraph with `Fatal process out of memory: Zone`
  * during tree-sitter grammar compilation. This module owns the
  * user-facing banner shown before exit. Kept side-effect-free so it's
@@ -10,20 +10,20 @@
 
 /**
  * Build the bordered banner shown when CodeGraph detects an
- * unsupported Node.js major version (currently 25+). Pinned via unit
+ * unsupported Node.js major version (currently 24+). Pinned via unit
  * test so the recovery commands and override instructions can't be
  * silently stripped by future edits.
  *
  * Uses ASCII glyphs to stay readable on Windows OEM-codepage consoles
  * (see ../ui/glyphs.ts for the rationale).
  */
-export function buildNode25BlockBanner(nodeVersion: string): string {
+export function buildUnsupportedNodeBlockBanner(nodeVersion: string): string {
   const sep = '-'.repeat(72);
   return [
     sep,
     `[CodeGraph] Unsupported Node.js version: ${nodeVersion}`,
     sep,
-    'Node.js 25.x has a V8 WASM JIT (turboshaft) Zone allocator bug that',
+    'Node.js 24.x and newer have a V8 WASM JIT (turboshaft) Zone allocator bug that',
     'crashes with `Fatal process out of memory: Zone` when CodeGraph',
     'compiles tree-sitter grammars. CodeGraph WILL crash on this Node',
     'version mid-indexing. See https://github.com/colbymchenry/codegraph/issues/81',
@@ -37,3 +37,5 @@ export function buildNode25BlockBanner(nodeVersion: string): string {
     sep,
   ].join('\n');
 }
+
+export const buildNode25BlockBanner = buildUnsupportedNodeBlockBanner;

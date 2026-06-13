@@ -5,6 +5,7 @@ node_modules/
 dist/
 
 .cmem
+graphify-out/
 
 # IDE
 .idea/
@@ -20,6 +21,7 @@ Thumbs.db
 # Test coverage
 /coverage/
 .nyc_output/
+__tests__/evaluation/results/
 
 # Environment
 .env

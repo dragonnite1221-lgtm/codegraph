@@ -7,23 +7,25 @@
 import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
-import * as crypto from 'crypto';
-import { execFileSync } from 'child_process';
 import {
   Language,
-  FileRecord,
   ExtractionResult,
   ExtractionError,
   CodeGraphConfig,
 } from '../types';
 import { QueryBuilder } from '../db/queries';
-import { extractFromSource } from './tree-sitter';
+import { extractFromSource } from './extract-from-source';
 import { detectLanguage, isLanguageSupported, initGrammars, loadGrammarsForLanguages } from './grammars';
-import { logDebug, logWarn } from '../errors';
-import { validatePathWithinRoot, normalizePath } from '../utils';
-import picomatch from 'picomatch';
+import { logWarn } from '../errors';
+import { validatePathWithinRoot } from '../utils';
 import { detectFrameworks } from '../resolution/frameworks';
 import type { ResolutionContext } from '../resolution/types';
+import {
+  scanDirectory,
+  scanDirectoryAsync,
+} from './file-scanner';
+import { storeExtractionResult } from './result-storage';
+import { getChangedFilesForIndex, runSync } from './sync-operations';
 
 /**
  * Number of files to read in parallel during indexing.
@@ -86,324 +88,27 @@ export interface SyncResult {
   changedFilePaths?: string[];
 }
 
-/**
- * Calculate SHA256 hash of file contents
- */
-export function hashContent(content: string): string {
-  return crypto.createHash('sha256').update(content).digest('hex');
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
 }
 
-/**
- * Check if a path matches any glob pattern (simplified)
- */
-function matchesGlob(filePath: string, pattern: string): boolean {
-  filePath = normalizePath(filePath);
-  return picomatch.isMatch(filePath, pattern, { dot: true });
+function isExtractionResult(value: unknown): value is ExtractionResult {
+  if (!isRecord(value)) return false;
+  return (
+    Array.isArray(value.nodes) &&
+    Array.isArray(value.edges) &&
+    Array.isArray(value.unresolvedReferences) &&
+    Array.isArray(value.errors) &&
+    typeof value.durationMs === 'number'
+  );
 }
 
-/**
- * Check if a file should be included based on config
- */
-export function shouldIncludeFile(
-  filePath: string,
-  config: CodeGraphConfig
-): boolean {
-  // Check exclude patterns first
-  for (const pattern of config.exclude) {
-    if (matchesGlob(filePath, pattern)) {
-      return false;
-    }
-  }
-
-  // Check include patterns
-  for (const pattern of config.include) {
-    if (matchesGlob(filePath, pattern)) {
-      return true;
-    }
-  }
-
-  return false;
+function shouldStoreParseResult(result: ExtractionResult): boolean {
+  return result.nodes.length > 0 || result.errors.length === 0;
 }
 
-/**
- * Get all files visible to git (tracked + untracked but not ignored).
- * Respects .gitignore at all levels (root, subdirectories).
- * Returns null on failure (non-git project) so callers can fall back.
- */
-function getGitVisibleFiles(rootDir: string): Set<string> | null {
-  try {
-    // Check if the project directory is gitignored by a parent repo.
-    // When rootDir lives inside a parent git repo that ignores it,
-    // `git ls-files` returns nothing — fall back to filesystem walk.
-    const gitRoot = execFileSync(
-      'git',
-      ['rev-parse', '--show-toplevel'],
-      { cwd: rootDir, encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }
-    ).trim();
-
-    if (path.resolve(gitRoot) !== path.resolve(rootDir)) {
-      try {
-        // git check-ignore exits 0 if the path IS ignored, 1 if not
-        execFileSync(
-          'git',
-          ['check-ignore', '-q', path.resolve(rootDir)],
-          { cwd: rootDir, encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }
-        );
-        // Directory is gitignored by parent repo — fall back to filesystem walk
-        return null;
-      } catch {
-        // Not ignored — safe to use git ls-files
-      }
-    }
-
-    const files = new Set<string>();
-    const gitOpts = { cwd: rootDir, encoding: 'utf-8' as const, timeout: 30000, maxBuffer: 50 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'] as ['pipe', 'pipe', 'pipe'] };
-
-    // Tracked files. --recurse-submodules pulls in files from active submodules,
-    // which the main repo's index would otherwise represent only as a commit pointer.
-    // Without this, monorepos using submodules index 0 files. (See issue #147.)
-    // Note: --recurse-submodules only supports -c/--cached and --stage modes — it
-    // can't be combined with -o, so untracked files are gathered separately below.
-    const tracked = execFileSync('git', ['ls-files', '-c', '--recurse-submodules'], gitOpts);
-    for (const line of tracked.split('\n')) {
-      const trimmed = line.trim();
-      if (trimmed) {
-        files.add(normalizePath(trimmed));
-      }
-    }
-
-    // Untracked files in the main repo (submodules manage their own untracked state).
-    const untracked = execFileSync('git', ['ls-files', '-o', '--exclude-standard'], gitOpts);
-    for (const line of untracked.split('\n')) {
-      const trimmed = line.trim();
-      if (trimmed) {
-        files.add(normalizePath(trimmed));
-      }
-    }
-
-    return files;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Result of git-based change detection.
- * Returns null when git is unavailable (non-git project or command failure),
- * signaling the caller to fall back to full filesystem scan.
- */
-interface GitChanges {
-  modified: string[];  // M, MM, AM — files to re-hash + re-index
-  added: string[];     // ?? — new untracked files to index
-  deleted: string[];   // D — files to remove from DB
-}
-
-/**
- * Use `git status` to detect changed files instead of scanning every file.
- * Returns null on failure so callers fall back to full scan.
- */
-function getGitChangedFiles(rootDir: string, config: CodeGraphConfig): GitChanges | null {
-  try {
-    const output = execFileSync(
-      'git',
-      ['status', '--porcelain', '--no-renames'],
-      { cwd: rootDir, encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] }
-    );
-
-    const modified: string[] = [];
-    const added: string[] = [];
-    const deleted: string[] = [];
-
-    for (const line of output.split('\n')) {
-      if (line.length < 4) continue; // Minimum: "XY file"
-
-      const statusCode = line.substring(0, 2);
-      const filePath = normalizePath(line.substring(3));
-
-      // Skip files that don't match include/exclude config
-      if (!shouldIncludeFile(filePath, config)) continue;
-
-      if (statusCode === '??') {
-        added.push(filePath);
-      } else if (statusCode.includes('D')) {
-        deleted.push(filePath);
-      } else {
-        // M, MM, AM, A (staged), etc. — treat as modified
-        modified.push(filePath);
-      }
-    }
-
-    return { modified, added, deleted };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Marker file name that indicates a directory (and all children) should be skipped
- */
-const CODEGRAPH_IGNORE_MARKER = '.codegraphignore';
-
-/**
- * Recursively scan directory for source files.
- *
- * In git repos, uses `git ls-files` to get the file list (inherently
- * respects .gitignore at all levels), then filters by config include patterns.
- * Falls back to filesystem walk for non-git projects.
- */
-export function scanDirectory(
-  rootDir: string,
-  config: CodeGraphConfig,
-  onProgress?: (current: number, file: string) => void
-): string[] {
-  // Fast path: use git to get all visible files (respects .gitignore everywhere)
-  const gitFiles = getGitVisibleFiles(rootDir);
-  if (gitFiles) {
-    const files: string[] = [];
-    let count = 0;
-    for (const filePath of gitFiles) {
-      if (shouldIncludeFile(filePath, config)) {
-        files.push(filePath);
-        count++;
-        onProgress?.(count, filePath);
-      }
-    }
-    return files;
-  }
-
-  // Fallback: walk filesystem for non-git projects
-  return scanDirectoryWalk(rootDir, config, onProgress);
-}
-
-/**
- * Async variant of scanDirectory that yields to the event loop periodically,
- * allowing worker threads to receive and render progress messages.
- */
-export async function scanDirectoryAsync(
-  rootDir: string,
-  config: CodeGraphConfig,
-  onProgress?: (current: number, file: string) => void
-): Promise<string[]> {
-  const gitFiles = getGitVisibleFiles(rootDir);
-  if (gitFiles) {
-    const files: string[] = [];
-    let count = 0;
-    for (const filePath of gitFiles) {
-      if (shouldIncludeFile(filePath, config)) {
-        files.push(filePath);
-        count++;
-        onProgress?.(count, filePath);
-        // Yield every 100 files so worker threads can render progress
-        if (count % 100 === 0) {
-          await new Promise<void>(r => setImmediate(r));
-        }
-      }
-    }
-    return files;
-  }
-
-  return scanDirectoryWalk(rootDir, config, onProgress);
-}
-
-/**
- * Filesystem walk fallback for non-git projects.
- */
-function scanDirectoryWalk(
-  rootDir: string,
-  config: CodeGraphConfig,
-  onProgress?: (current: number, file: string) => void
-): string[] {
-  const files: string[] = [];
-  let count = 0;
-  const visitedDirs = new Set<string>();
-
-  function walk(dir: string): void {
-    let realDir: string;
-    try {
-      realDir = fs.realpathSync(dir);
-    } catch {
-      logDebug('Skipping unresolvable directory', { dir });
-      return;
-    }
-
-    if (visitedDirs.has(realDir)) {
-      logDebug('Skipping already-visited directory (symlink cycle)', { dir, realDir });
-      return;
-    }
-    visitedDirs.add(realDir);
-
-    // Check for .codegraphignore marker file
-    const ignoreMarker = path.join(dir, CODEGRAPH_IGNORE_MARKER);
-    if (fs.existsSync(ignoreMarker)) {
-      logDebug('Skipping directory due to .codegraphignore marker', { dir });
-      return;
-    }
-
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch (error) {
-      logDebug('Skipping unreadable directory', { dir, error: String(error) });
-      return;
-    }
-
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-      const relativePath = normalizePath(path.relative(rootDir, fullPath));
-
-      if (entry.isSymbolicLink()) {
-        try {
-          const realTarget = fs.realpathSync(fullPath);
-          const stat = fs.statSync(realTarget);
-          if (stat.isDirectory()) {
-            const dirPattern = relativePath + '/';
-            let excluded = false;
-            for (const pattern of config.exclude) {
-              if (matchesGlob(dirPattern, pattern) || matchesGlob(relativePath, pattern)) {
-                excluded = true;
-                break;
-              }
-            }
-            if (!excluded) {
-              walk(fullPath);
-            }
-          } else if (stat.isFile()) {
-            if (shouldIncludeFile(relativePath, config)) {
-              files.push(relativePath);
-              count++;
-              onProgress?.(count, relativePath);
-            }
-          }
-        } catch {
-          logDebug('Skipping broken symlink', { path: fullPath });
-        }
-        continue;
-      }
-
-      if (entry.isDirectory()) {
-        const dirPattern = relativePath + '/';
-        let excluded = false;
-        for (const pattern of config.exclude) {
-          if (matchesGlob(dirPattern, pattern) || matchesGlob(relativePath, pattern)) {
-            excluded = true;
-            break;
-          }
-        }
-        if (!excluded) {
-          walk(fullPath);
-        }
-      } else if (entry.isFile()) {
-        if (shouldIncludeFile(relativePath, config)) {
-          files.push(relativePath);
-          count++;
-          onProgress?.(count, relativePath);
-        }
-      }
-    }
-  }
-
-  walk(rootDir);
-  return files;
+function hasFatalExtractionError(result: ExtractionResult): boolean {
+  return result.errors.some((error) => error.severity === 'error');
 }
 
 /**
@@ -586,7 +291,7 @@ export class ExtractionOrchestrator {
     }>();
 
     function rejectAllPending(reason: string): void {
-      for (const [id, pending] of pendingParses) {
+      for (const [id, pending] of [...pendingParses]) {
         clearTimeout(pending.timer);
         pendingParses.delete(id);
         pending.reject(new Error(reason));
@@ -594,13 +299,18 @@ export class ExtractionOrchestrator {
     }
 
     function attachWorkerHandlers(w: import('worker_threads').Worker): void {
-      w.on('message', (msg: { type: string; id?: number; result?: ExtractionResult }) => {
-        if (msg.type === 'parse-result' && msg.id !== undefined) {
-          const pending = pendingParses.get(msg.id);
-          if (pending) {
-            clearTimeout(pending.timer);
-            pendingParses.delete(msg.id);
-            pending.resolve(msg.result!);
+      w.on('message', (msg: unknown) => {
+        if (parseWorker !== w) return;
+        if (!isRecord(msg) || msg.type !== 'parse-result' || typeof msg.id !== 'number') {
+          return;
+        }
+
+        const pending = pendingParses.get(msg.id);
+        if (pending) {
+          if (isExtractionResult(msg.result)) {
+            pending.resolve(msg.result);
+          } else {
+            pending.reject(new Error('Malformed parse result from worker'));
           }
         }
       });
@@ -627,19 +337,46 @@ export class ExtractionOrchestrator {
     async function ensureWorker(): Promise<import('worker_threads').Worker> {
       if (parseWorker) return parseWorker;
       log('Spawning new parse worker...');
-      parseWorker = new WorkerClass!(parseWorkerPath);
-      attachWorkerHandlers(parseWorker);
+      const worker = new WorkerClass!(parseWorkerPath);
+      parseWorker = worker;
+      attachWorkerHandlers(worker);
 
       // Load grammars in the new worker
       await new Promise<void>((resolve, reject) => {
-        parseWorker!.once('message', (msg: { type: string }) => {
-          if (msg.type === 'grammars-loaded') resolve();
-          else reject(new Error(`Unexpected message: ${msg.type}`));
-        });
-        parseWorker!.postMessage({ type: 'load-grammars', languages: neededLanguages });
+        let settled = false;
+
+        const cleanup = (): void => {
+          worker.off('message', onMessage);
+          worker.off('error', onError);
+          worker.off('exit', onExit);
+        };
+        const settle = (fn: () => void): void => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          fn();
+        };
+        const onMessage = (msg: unknown): void => {
+          if (isRecord(msg) && msg.type === 'grammars-loaded') {
+            settle(resolve);
+          } else {
+            settle(() => reject(new Error('Unexpected worker message during grammar load')));
+          }
+        };
+        const onError = (err: Error): void => {
+          settle(() => reject(err));
+        };
+        const onExit = (code: number): void => {
+          settle(() => reject(new Error(`Worker exited during grammar load with code ${code}`)));
+        };
+
+        worker.once('message', onMessage);
+        worker.once('error', onError);
+        worker.once('exit', onExit);
+        worker.postMessage({ type: 'load-grammars', languages: neededLanguages });
       });
 
-      return parseWorker;
+      return worker;
     }
 
     if (WorkerClass) {
@@ -676,7 +413,7 @@ export class ExtractionOrchestrator {
       // This destroys the WASM linear memory (which can grow but never shrink)
       // and starts a fresh worker with a clean heap.
       if (workerParseCount >= WORKER_RECYCLE_INTERVAL) {
-        await recycleWorker();
+        recycleWorker();
       }
 
       const worker = await ensureWorker();
@@ -687,18 +424,34 @@ export class ExtractionOrchestrator {
       const timeoutMs = PARSE_TIMEOUT_MS + Math.floor(content.length / 100_000) * 10_000;
 
       return new Promise<ExtractionResult>((resolve, reject) => {
-        const timer = setTimeout(() => {
+        let settled = false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+
+        const settle = (fn: () => void): void => {
+          if (settled) return;
+          settled = true;
+          if (timer) clearTimeout(timer);
           pendingParses.delete(id);
+          fn();
+        };
+
+        timer = setTimeout(() => {
           log(`TIMEOUT: ${filePath} exceeded ${timeoutMs}ms — killing worker`);
           // Reject FIRST — worker.terminate() can hang if WASM is stuck
-          parseWorker = null;
-          workerParseCount = 0;
-          reject(new Error(`Parse timed out after ${timeoutMs}ms`));
+          settle(() => reject(new Error(`Parse timed out after ${timeoutMs}ms`)));
+          if (parseWorker === worker) {
+            parseWorker = null;
+            workerParseCount = 0;
+          }
           // Fire-and-forget: kill the stuck worker in the background
           worker.terminate().catch(() => {});
         }, timeoutMs);
 
-        pendingParses.set(id, { resolve, reject, timer });
+        pendingParses.set(id, {
+          resolve: (result) => settle(() => resolve(result)),
+          reject: (err) => settle(() => reject(err)),
+          timer,
+        });
         worker.postMessage({ type: 'parse', id, filePath, content, frameworkNames });
       });
     }
@@ -729,8 +482,11 @@ export class ExtractionOrchestrator {
               logWarn('Path traversal blocked in batch reader', { filePath: fp });
               return { filePath: fp, content: null as string | null, stats: null as fs.Stats | null, error: new Error('Path traversal blocked') };
             }
-            const content = await fsp.readFile(fullPath, 'utf-8');
             const stats = await fsp.stat(fullPath);
+            if (stats.size > this.config.maxFileSize) {
+              return { filePath: fp, content: '', stats, error: null as Error | null };
+            }
+            const content = await fsp.readFile(fullPath, 'utf-8');
             return { filePath: fp, content, stats, error: null as Error | null };
           } catch (err) {
             return { filePath: fp, content: null as string | null, stats: null as fs.Stats | null, error: err as Error };
@@ -814,7 +570,7 @@ export class ExtractionOrchestrator {
         processed++;
 
         // Store in database on main thread (SQLite is not thread-safe)
-        if (result.nodes.length > 0 || result.errors.length === 0) {
+        if (shouldStoreParseResult(result)) {
           const language = detectLanguage(filePath, content);
           this.storeExtractionResult(filePath, content, language, stats, result);
         }
@@ -830,7 +586,7 @@ export class ExtractionOrchestrator {
           filesIndexed++;
           totalNodes += result.nodes.length;
           totalEdges += result.edges.length;
-        } else if (result.errors.some((e) => e.severity === 'error')) {
+        } else if (hasFatalExtractionError(result)) {
           filesErrored++;
         } else {
           filesSkipped++;
@@ -870,10 +626,11 @@ export class ExtractionOrchestrator {
         // Fresh worker for every retry — maximum WASM headroom
         recycleWorker();
 
+        const fullPath = validatePathWithinRoot(this.rootDir, filePath);
+        if (!fullPath) continue;
+
         let content: string;
         try {
-          const fullPath = validatePathWithinRoot(this.rootDir, filePath);
-          if (!fullPath) continue;
           content = await fsp.readFile(fullPath, 'utf-8');
         } catch {
           continue;
@@ -887,17 +644,21 @@ export class ExtractionOrchestrator {
           continue;
         }
 
-        if (result.nodes.length > 0 || result.errors.length === 0) {
+        if (shouldStoreParseResult(result)) {
           const language = detectLanguage(filePath, content);
-          const stats = await fsp.stat(path.join(this.rootDir, filePath));
+          const stats = await fsp.stat(fullPath);
           this.storeExtractionResult(filePath, content, language, stats, result);
 
           const idx = errors.indexOf(errEntry);
           if (idx >= 0) errors.splice(idx, 1);
           filesErrored--;
-          filesIndexed++;
           totalNodes += result.nodes.length;
           totalEdges += result.edges.length;
+          if (result.nodes.length > 0) {
+            filesIndexed++;
+          } else {
+            filesSkipped++;
+          }
           log(`Retry OK: ${filePath} (${result.nodes.length} nodes)`);
         }
       }
@@ -915,10 +676,11 @@ export class ExtractionOrchestrator {
 
           recycleWorker();
 
+          const fullPath = validatePathWithinRoot(this.rootDir, filePath);
+          if (!fullPath) continue;
+
           let fullContent: string;
           try {
-            const fullPath = validatePathWithinRoot(this.rootDir, filePath);
-            if (!fullPath) continue;
             fullContent = await fsp.readFile(fullPath, 'utf-8');
           } catch {
             continue;
@@ -938,17 +700,21 @@ export class ExtractionOrchestrator {
             continue;
           }
 
-          if (result.nodes.length > 0 || result.errors.length === 0) {
+          if (shouldStoreParseResult(result)) {
             const language = detectLanguage(filePath, fullContent);
-            const stats = await fsp.stat(path.join(this.rootDir, filePath));
+            const stats = await fsp.stat(fullPath);
             this.storeExtractionResult(filePath, fullContent, language, stats, result);
 
             const idx = errors.indexOf(errEntry);
             if (idx >= 0) errors.splice(idx, 1);
             filesErrored--;
-            filesIndexed++;
             totalNodes += result.nodes.length;
             totalEdges += result.edges.length;
+            if (result.nodes.length > 0) {
+              filesIndexed++;
+            } else {
+              filesSkipped++;
+            }
             log(`Retry (stripped) OK: ${filePath} (${result.nodes.length} nodes)`);
           }
         }
@@ -956,7 +722,9 @@ export class ExtractionOrchestrator {
     }
 
     // Shut down parse worker and clear any pending timers
-    rejectAllPending('Indexing complete');
+    if (pendingParses.size > 0) {
+      rejectAllPending('Indexing complete');
+    }
     if (parseWorker) {
       (parseWorker as import('worker_threads').Worker).terminate().catch(() => {});
     }
@@ -1036,6 +804,9 @@ export class ExtractionOrchestrator {
     let stats: fs.Stats;
     try {
       stats = await fsp.stat(fullPath);
+      if (stats.size > this.config.maxFileSize) {
+        return this.indexFileWithContent(relativePath, '', stats);
+      }
       content = await fsp.readFile(fullPath, 'utf-8');
     } catch (error) {
       return {
@@ -1133,67 +904,7 @@ export class ExtractionOrchestrator {
     stats: fs.Stats,
     result: ExtractionResult
   ): void {
-    const contentHash = hashContent(content);
-
-    // Check if file already exists and hasn't changed
-    const existingFile = this.queries.getFileByPath(filePath);
-    if (existingFile && existingFile.contentHash === contentHash) {
-      return; // No changes
-    }
-
-    // Delete existing data for this file
-    if (existingFile) {
-      this.queries.deleteFile(filePath);
-    }
-
-    // Filter out nodes with missing required fields before insertion.
-    // This prevents FK violations when edges reference nodes that would
-    // be silently skipped by insertNode() (see issue #42).
-    const validNodes = result.nodes.filter((n) => n.id && n.kind && n.name && n.filePath && n.language);
-
-    // Insert nodes
-    if (validNodes.length > 0) {
-      this.queries.insertNodes(validNodes);
-    }
-
-    // Filter edges to only reference nodes that were actually inserted
-    if (result.edges.length > 0) {
-      const insertedIds = new Set(validNodes.map((n) => n.id));
-      const validEdges = result.edges.filter(
-        (e) => insertedIds.has(e.source) && insertedIds.has(e.target)
-      );
-      if (validEdges.length > 0) {
-        this.queries.insertEdges(validEdges);
-      }
-    }
-
-    // Insert unresolved references in batch with denormalized filePath/language
-    if (result.unresolvedReferences.length > 0) {
-      const insertedIds = new Set(validNodes.map((n) => n.id));
-      const refsWithContext = result.unresolvedReferences
-        .filter((ref) => insertedIds.has(ref.fromNodeId))
-        .map((ref) => ({
-          ...ref,
-          filePath: ref.filePath ?? filePath,
-          language: ref.language ?? language,
-        }));
-      if (refsWithContext.length > 0) {
-        this.queries.insertUnresolvedRefsBatch(refsWithContext);
-      }
-    }
-
-    // Insert file record
-    const fileRecord: FileRecord = {
-      path: filePath,
-      contentHash,
-      language,
-      size: stats.size,
-      modifiedAt: stats.mtimeMs,
-      indexedAt: Date.now(),
-      nodeCount: result.nodes.length,
-      errors: result.errors.length > 0 ? result.errors : undefined,
-    };
-    this.queries.upsertFile(fileRecord);
+    storeExtractionResult(this.queries, filePath, content, language, stats, result);
   }
 
   /**
@@ -1201,149 +912,15 @@ export class ExtractionOrchestrator {
    * Uses git status as a fast path when available, falling back to full scan.
    */
   async sync(onProgress?: (progress: IndexProgress) => void): Promise<SyncResult> {
-    await initGrammars(); // Initialize WASM runtime (grammars loaded lazily below)
-    const startTime = Date.now();
-    let filesChecked = 0;
-    let filesAdded = 0;
-    let filesModified = 0;
-    let filesRemoved = 0;
-    let nodesUpdated = 0;
-    const changedFilePaths: string[] = [];
-
-    onProgress?.({
-      phase: 'scanning',
-      current: 0,
-      total: 0,
-    });
-
-    const filesToIndex: string[] = [];
-    const gitChanges = getGitChangedFiles(this.rootDir, this.config);
-
-    if (gitChanges) {
-      // === Git fast path ===
-      // Only inspect the files git reports as changed instead of scanning everything.
-      filesChecked = gitChanges.modified.length + gitChanges.added.length + gitChanges.deleted.length;
-
-      // Handle deleted files
-      for (const filePath of gitChanges.deleted) {
-        const tracked = this.queries.getFileByPath(filePath);
-        if (tracked) {
-          this.queries.deleteFile(filePath);
-          filesRemoved++;
-        }
-      }
-
-      // Handle modified files — read + hash only these files
-      for (const filePath of gitChanges.modified) {
-        const fullPath = path.join(this.rootDir, filePath);
-        let content: string;
-        try {
-          content = fs.readFileSync(fullPath, 'utf-8');
-        } catch (error) {
-          logDebug('Skipping unreadable file during sync', { filePath, error: String(error) });
-          continue;
-        }
-
-        const contentHash = hashContent(content);
-        const tracked = this.queries.getFileByPath(filePath);
-
-        if (!tracked) {
-          filesToIndex.push(filePath);
-          changedFilePaths.push(filePath);
-          filesAdded++;
-        } else if (tracked.contentHash !== contentHash) {
-          filesToIndex.push(filePath);
-          changedFilePaths.push(filePath);
-          filesModified++;
-        }
-      }
-
-      // Handle added (untracked) files
-      for (const filePath of gitChanges.added) {
-        filesToIndex.push(filePath);
-        changedFilePaths.push(filePath);
-        filesAdded++;
-      }
-    } else {
-      // === Fallback: full scan (non-git project or git failure) ===
-      const currentFiles = new Set(scanDirectory(this.rootDir, this.config));
-      filesChecked = currentFiles.size;
-
-      // Build Map for O(1) lookups instead of .find() per file
-      const trackedFiles = this.queries.getAllFiles();
-      const trackedMap = new Map<string, FileRecord>();
-      for (const f of trackedFiles) {
-        trackedMap.set(f.path, f);
-      }
-
-      // Find files to remove (in DB but not on disk)
-      for (const tracked of trackedFiles) {
-        if (!currentFiles.has(tracked.path)) {
-          this.queries.deleteFile(tracked.path);
-          filesRemoved++;
-        }
-      }
-
-      // Find files to add or update
-      for (const filePath of currentFiles) {
-        const fullPath = path.join(this.rootDir, filePath);
-        let content: string;
-        try {
-          content = fs.readFileSync(fullPath, 'utf-8');
-        } catch (error) {
-          logDebug('Skipping unreadable file during sync', { filePath, error: String(error) });
-          continue;
-        }
-
-        const contentHash = hashContent(content);
-        const tracked = trackedMap.get(filePath);
-
-        if (!tracked) {
-          filesToIndex.push(filePath);
-          changedFilePaths.push(filePath);
-          filesAdded++;
-        } else if (tracked.contentHash !== contentHash) {
-          filesToIndex.push(filePath);
-          changedFilePaths.push(filePath);
-          filesModified++;
-        }
-      }
-    }
-
-    // Load only grammars needed for changed files
-    if (filesToIndex.length > 0) {
-      const neededLanguages = [...new Set(filesToIndex.map((f) => detectLanguage(f)))];
-      // .h files default to 'c' but may be C++ — ensure cpp grammar is loaded
-      if (neededLanguages.includes('c') && !neededLanguages.includes('cpp')) {
-        neededLanguages.push('cpp');
-      }
-      await loadGrammarsForLanguages(neededLanguages);
-    }
-
-    // Index changed files
-    const total = filesToIndex.length;
-    for (let i = 0; i < filesToIndex.length; i++) {
-      const filePath = filesToIndex[i]!;
-      onProgress?.({
-        phase: 'parsing',
-        current: i + 1,
-        total,
-        currentFile: filePath,
-      });
-
-      const result = await this.indexFile(filePath);
-      nodesUpdated += result.nodes.length;
-    }
-
-    return {
-      filesChecked,
-      filesAdded,
-      filesModified,
-      filesRemoved,
-      nodesUpdated,
-      durationMs: Date.now() - startTime,
-      changedFilePaths: changedFilePaths.length > 0 ? changedFilePaths : undefined,
-    };
+    return runSync(
+      {
+        rootDir: this.rootDir,
+        config: this.config,
+        queries: this.queries,
+        indexFile: (filePath) => this.indexFile(filePath),
+      },
+      onProgress
+    );
   }
 
   /**
@@ -1351,97 +928,16 @@ export class ExtractionOrchestrator {
    * Uses git status as a fast path when available, falling back to full scan.
    */
   getChangedFiles(): { added: string[]; modified: string[]; removed: string[] } {
-    const gitChanges = getGitChangedFiles(this.rootDir, this.config);
-
-    if (gitChanges) {
-      // === Git fast path ===
-      const added: string[] = [];
-      const modified: string[] = [];
-      const removed: string[] = [];
-
-      // Deleted files — only report if tracked in DB
-      for (const filePath of gitChanges.deleted) {
-        const tracked = this.queries.getFileByPath(filePath);
-        if (tracked) {
-          removed.push(filePath);
-        }
-      }
-
-      // Modified files — read + hash only these, compare with DB
-      for (const filePath of gitChanges.modified) {
-        const fullPath = path.join(this.rootDir, filePath);
-        let content: string;
-        try {
-          content = fs.readFileSync(fullPath, 'utf-8');
-        } catch (error) {
-          logDebug('Skipping unreadable file while detecting changes', { filePath, error: String(error) });
-          continue;
-        }
-
-        const contentHash = hashContent(content);
-        const tracked = this.queries.getFileByPath(filePath);
-
-        if (!tracked) {
-          added.push(filePath);
-        } else if (tracked.contentHash !== contentHash) {
-          modified.push(filePath);
-        }
-      }
-
-      // Added (untracked) files
-      for (const filePath of gitChanges.added) {
-        added.push(filePath);
-      }
-
-      return { added, modified, removed };
-    }
-
-    // === Fallback: full scan (non-git project or git failure) ===
-    const currentFiles = new Set(scanDirectory(this.rootDir, this.config));
-    const trackedFiles = this.queries.getAllFiles();
-
-    // Build Map for O(1) lookups
-    const trackedMap = new Map<string, FileRecord>();
-    for (const f of trackedFiles) {
-      trackedMap.set(f.path, f);
-    }
-
-    const added: string[] = [];
-    const modified: string[] = [];
-    const removed: string[] = [];
-
-    // Find removed files
-    for (const tracked of trackedFiles) {
-      if (!currentFiles.has(tracked.path)) {
-        removed.push(tracked.path);
-      }
-    }
-
-    // Find added and modified files
-    for (const filePath of currentFiles) {
-      const fullPath = path.join(this.rootDir, filePath);
-      let content: string;
-      try {
-        content = fs.readFileSync(fullPath, 'utf-8');
-      } catch (error) {
-        logDebug('Skipping unreadable file while detecting changes', { filePath, error: String(error) });
-        continue;
-      }
-
-      const contentHash = hashContent(content);
-      const tracked = trackedMap.get(filePath);
-
-      if (!tracked) {
-        added.push(filePath);
-      } else if (tracked.contentHash !== contentHash) {
-        modified.push(filePath);
-      }
-    }
-
-    return { added, modified, removed };
+    return getChangedFilesForIndex({
+      rootDir: this.rootDir,
+      config: this.config,
+      queries: this.queries,
+      indexFile: (filePath) => this.indexFile(filePath),
+    });
   }
 }
 
 // Re-export useful types and functions
-export { extractFromSource } from './tree-sitter';
+export { hashContent, scanDirectory, scanDirectoryAsync, shouldIncludeFile } from './file-scanner';
+export { extractFromSource } from './extract-from-source';
 export { detectLanguage, isLanguageSupported, isGrammarLoaded, getSupportedLanguages, initGrammars, loadGrammarsForLanguages, loadAllGrammars } from './grammars';
