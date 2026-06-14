@@ -134,5 +134,5 @@ npm publish
 ## House rules
 
 - The `0.7.x` line is in active multi-agent rollout. Any change to `src/installer/` (especially `targets/`) needs corresponding test coverage and a CHANGELOG entry — installer regressions break every new install silently.
-- When changing what the MCP tools do or how agents should use them, update **all three** of `src/mcp/server-instructions.ts`, `src/installer/instructions-template.ts`, and `.cursor/rules/codegraph.mdc` — they're written to different places but say the same thing.
+- When changing what the MCP tools do or how agents should use them, update `src/mcp/server-instructions.ts` (the MCP `initialize` playbook) and `src/installer/instructions-template.ts` (the agent-agnostic body). `.cursor/rules/codegraph.mdc` is **generated** from the template — run `node scripts/gen-cursor-rule.cjs` after editing it, never hand-edit the `.mdc` body. `__tests__/instructions-sync.test.ts` enforces the sync: the `.mdc` body must equal `INSTRUCTIONS_TEMPLATE`, and all three docs must reference exactly the tools the MCP server registers.
 - CodeGraph provides **code context**, not product requirements. For new features, ask the user about UX, edge cases, and acceptance criteria — the graph won't tell you.
