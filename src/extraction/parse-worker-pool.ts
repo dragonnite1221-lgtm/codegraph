@@ -14,24 +14,10 @@ import type { ExtractionResult, Language } from '../types';
 import { extractFromSource } from './extract-from-source';
 import { detectLanguage } from './grammars';
 import { logWarn } from '../errors';
+import { isExtractionResult, isRecord, loadGrammarsInWorker } from './parse-worker-pool-helpers';
 
 const PARSE_TIMEOUT_MS = 10_000;
 const WORKER_RECYCLE_INTERVAL = 250;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-
-function isExtractionResult(value: unknown): value is ExtractionResult {
-  if (!isRecord(value)) return false;
-  return (
-    Array.isArray(value.nodes) &&
-    Array.isArray(value.edges) &&
-    Array.isArray(value.unresolvedReferences) &&
-    Array.isArray(value.errors) &&
-    typeof value.durationMs === 'number'
-  );
-}
 
 export interface ParseWorkerPoolOptions {
   /** Worker constructor, or null to force the in-process fallback. */
@@ -114,39 +100,7 @@ export class ParseWorkerPool {
     this.attachWorkerHandlers(worker);
 
     // Load grammars in the new worker
-    await new Promise<void>((resolve, reject) => {
-      let settled = false;
-
-      const cleanup = (): void => {
-        worker.off('message', onMessage);
-        worker.off('error', onError);
-        worker.off('exit', onExit);
-      };
-      const settle = (fn: () => void): void => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        fn();
-      };
-      const onMessage = (msg: unknown): void => {
-        if (isRecord(msg) && msg.type === 'grammars-loaded') {
-          settle(resolve);
-        } else {
-          settle(() => reject(new Error('Unexpected worker message during grammar load')));
-        }
-      };
-      const onError = (err: Error): void => {
-        settle(() => reject(err));
-      };
-      const onExit = (code: number): void => {
-        settle(() => reject(new Error(`Worker exited during grammar load with code ${code}`)));
-      };
-
-      worker.once('message', onMessage);
-      worker.once('error', onError);
-      worker.once('exit', onExit);
-      worker.postMessage({ type: 'load-grammars', languages: this.opts.neededLanguages });
-    });
+    await loadGrammarsInWorker(worker, this.opts.neededLanguages);
 
     return worker;
   }
