@@ -42,7 +42,6 @@
 323 src/extraction/svelte-extractor.ts
 235 src/extraction/sync-operations.ts
 446 src/extraction/tree-sitter.ts
-209 src/extraction/variable-extraction.ts
 428 src/graph/queries.ts
 477 src/graph/traversal.ts
 826 src/index.ts
