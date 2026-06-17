@@ -28,7 +28,6 @@
 323 src/extraction/svelte-extractor.ts
 446 src/extraction/tree-sitter.ts
 428 src/graph/queries.ts
-477 src/graph/traversal.ts
 826 src/index.ts
 351 src/installer/index.ts
 254 src/installer/targets/claude.ts
