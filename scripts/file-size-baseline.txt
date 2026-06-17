@@ -24,7 +24,6 @@
 352 src/extraction/liquid-extractor.ts
 323 src/extraction/svelte-extractor.ts
 446 src/extraction/tree-sitter.ts
-428 src/graph/queries.ts
 826 src/index.ts
 351 src/installer/index.ts
 348 src/mcp/explore-output.ts
