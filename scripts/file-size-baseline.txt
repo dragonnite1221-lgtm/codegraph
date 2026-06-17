@@ -16,7 +16,6 @@
 266 __tests__/sync.test.ts
 291 __tests__/watcher.test.ts
 486 src/bin/codegraph.ts
-400 src/concurrency.ts
 465 src/context/context-helpers.ts
 421 src/context/context-search.ts
 239 src/context/index.ts
