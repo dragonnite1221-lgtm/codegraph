@@ -18,7 +18,7 @@ import {
 import { getParser, detectLanguage, isLanguageSupported } from './grammars';
 import { generateNodeId } from './tree-sitter-helpers';
 import { isInstantiationNodeType } from './tree-sitter-node-helpers';
-import { visitPascalNode } from './pascal-extraction-helpers';
+import { visitPascalNode } from './pascal-visitor';
 import type { LanguageExtractor, ExtractorContext } from './tree-sitter-types';
 import { EXTRACTORS } from './languages';
 import {

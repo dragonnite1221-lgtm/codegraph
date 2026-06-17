@@ -9,76 +9,14 @@
 import * as path from 'path';
 import { Parser, Language as WasmLanguage } from 'web-tree-sitter';
 import { Language } from '../types';
+import {
+  GrammarLanguage,
+  WASM_GRAMMAR_FILES,
+  LANGUAGE_DISPLAY_NAMES,
+} from './grammar-tables';
 
-export type GrammarLanguage = Exclude<Language, 'svelte' | 'vue' | 'liquid' | 'unknown'>;
-
-/**
- * WASM filename map — maps each language to its .wasm grammar file
- * in the tree-sitter-wasms package.
- */
-const WASM_GRAMMAR_FILES: Record<GrammarLanguage, string> = {
-  typescript: 'tree-sitter-typescript.wasm',
-  tsx: 'tree-sitter-tsx.wasm',
-  javascript: 'tree-sitter-javascript.wasm',
-  jsx: 'tree-sitter-javascript.wasm',
-  python: 'tree-sitter-python.wasm',
-  go: 'tree-sitter-go.wasm',
-  rust: 'tree-sitter-rust.wasm',
-  java: 'tree-sitter-java.wasm',
-  c: 'tree-sitter-c.wasm',
-  cpp: 'tree-sitter-cpp.wasm',
-  csharp: 'tree-sitter-c_sharp.wasm',
-  php: 'tree-sitter-php.wasm',
-  ruby: 'tree-sitter-ruby.wasm',
-  swift: 'tree-sitter-swift.wasm',
-  kotlin: 'tree-sitter-kotlin.wasm',
-  dart: 'tree-sitter-dart.wasm',
-  pascal: 'tree-sitter-pascal.wasm',
-  scala: 'tree-sitter-scala.wasm',
-};
-
-/**
- * File extension to Language mapping
- */
-export const EXTENSION_MAP: Record<string, Language> = {
-  '.ts': 'typescript',
-  '.tsx': 'tsx',
-  '.js': 'javascript',
-  '.mjs': 'javascript',
-  '.cjs': 'javascript',
-  '.jsx': 'jsx',
-  '.py': 'python',
-  '.pyw': 'python',
-  '.go': 'go',
-  '.rs': 'rust',
-  '.java': 'java',
-  '.c': 'c',
-  '.h': 'c', // Could also be C++, defaulting to C
-  '.cpp': 'cpp',
-  '.cc': 'cpp',
-  '.cxx': 'cpp',
-  '.hpp': 'cpp',
-  '.hxx': 'cpp',
-  '.cs': 'csharp',
-  '.php': 'php',
-  '.rb': 'ruby',
-  '.rake': 'ruby',
-  '.swift': 'swift',
-  '.kt': 'kotlin',
-  '.kts': 'kotlin',
-  '.dart': 'dart',
-  '.liquid': 'liquid',
-  '.svelte': 'svelte',
-  '.vue': 'vue',
-  '.pas': 'pascal',
-  '.dpr': 'pascal',
-  '.dpk': 'pascal',
-  '.lpr': 'pascal',
-  '.dfm': 'pascal',
-  '.fmx': 'pascal',
-  '.scala': 'scala',
-  '.sc': 'scala',
-};
+export { GrammarLanguage, WASM_GRAMMAR_FILES, EXTENSION_MAP } from './grammar-tables';
+export { detectLanguage } from './grammar-detect';
 
 /**
  * Caches for loaded grammars and parsers
@@ -176,30 +114,6 @@ export function getParser(language: Language): Parser | null {
 }
 
 /**
- * Detect language from file extension
- */
-export function detectLanguage(filePath: string, source?: string): Language {
-  const ext = filePath.substring(filePath.lastIndexOf('.')).toLowerCase();
-  const lang = EXTENSION_MAP[ext] || 'unknown';
-
-  // .h files could be C or C++ — check source content for C++ features
-  if (lang === 'c' && ext === '.h' && source) {
-    if (looksLikeCpp(source)) return 'cpp';
-  }
-
-  return lang;
-}
-
-/**
- * Heuristic: does a .h file contain C++ constructs?
- * Checks the first ~8KB for patterns that are unique to C++ and never valid C.
- */
-function looksLikeCpp(source: string): boolean {
-  const sample = source.substring(0, 8192);
-  return /\bnamespace\b|\bclass\s+\w+\s*[:{]|\btemplate\s*<|\b(?:public|private|protected)\s*:|\bvirtual\b|\busing\s+(?:namespace\b|\w+\s*=)/.test(sample);
-}
-
-/**
  * Check if a language is supported (has a grammar defined).
  * Returns true if the grammar exists, even if not yet loaded.
  */
@@ -269,29 +183,5 @@ export function getUnavailableGrammarErrors(): Partial<Record<Language, string>>
  * Get language display name
  */
 export function getLanguageDisplayName(language: Language): string {
-  const names: Record<Language, string> = {
-    typescript: 'TypeScript',
-    javascript: 'JavaScript',
-    tsx: 'TypeScript (TSX)',
-    jsx: 'JavaScript (JSX)',
-    python: 'Python',
-    go: 'Go',
-    rust: 'Rust',
-    java: 'Java',
-    c: 'C',
-    cpp: 'C++',
-    csharp: 'C#',
-    php: 'PHP',
-    ruby: 'Ruby',
-    swift: 'Swift',
-    kotlin: 'Kotlin',
-    dart: 'Dart',
-    svelte: 'Svelte',
-    vue: 'Vue',
-    liquid: 'Liquid',
-    pascal: 'Pascal / Delphi',
-    scala: 'Scala',
-    unknown: 'Unknown',
-  };
-  return names[language] || language;
+  return LANGUAGE_DISPLAY_NAMES[language] || language;
 }
