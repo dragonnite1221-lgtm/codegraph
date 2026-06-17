@@ -6,9 +6,8 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import picomatch from 'picomatch';
-import { CodeGraphConfig, DEFAULT_CONFIG, Language, NodeKind } from './types';
-import { normalizePath } from './utils';
+import { CodeGraphConfig, DEFAULT_CONFIG } from './types';
+import { validateConfig } from './config-validate';
 
 /**
  * Configuration filename
@@ -28,90 +27,6 @@ export function getConfigPath(projectRoot: string): string {
  * Rejects patterns with nested quantifiers (e.g., (a+)+, (a*)*) which
  * are the primary source of catastrophic backtracking. Also rejects
  * excessively long patterns and validates compilability.
- */
-function isSafeRegex(pattern: string): boolean {
-  // Reject excessively long patterns
-  if (pattern.length > 500) return false;
-
-  // Reject nested quantifiers: (...)+ followed by +, *, or {
-  // These are the primary cause of catastrophic backtracking
-  if (/([+*}])\s*[+*{]/.test(pattern)) return false;
-  if (/\([^)]*[+*][^)]*\)[+*{]/.test(pattern)) return false;
-
-  // Verify the pattern is a valid regex
-  try {
-    new RegExp(pattern);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Validate a configuration object
- */
-export function validateConfig(config: unknown): config is CodeGraphConfig {
-  if (typeof config !== 'object' || config === null) {
-    return false;
-  }
-
-  const c = config as Record<string, unknown>;
-
-  // Required fields
-  if (typeof c.version !== 'number') return false;
-  if (typeof c.rootDir !== 'string') return false;
-  if (!Array.isArray(c.include)) return false;
-  if (!Array.isArray(c.exclude)) return false;
-  if (!Array.isArray(c.languages)) return false;
-  if (!Array.isArray(c.frameworks)) return false;
-  if (typeof c.maxFileSize !== 'number') return false;
-  if (typeof c.extractDocstrings !== 'boolean') return false;
-  if (typeof c.trackCallSites !== 'boolean') return false;
-
-  // Validate include/exclude are string arrays
-  if (!c.include.every((p) => typeof p === 'string')) return false;
-  if (!c.exclude.every((p) => typeof p === 'string')) return false;
-
-  // Validate languages
-  const validLanguages: Language[] = [
-    'typescript',
-    'javascript',
-    'python',
-    'go',
-    'rust',
-    'java',
-    'svelte',
-    'unknown',
-  ];
-  if (!c.languages.every((l) => validLanguages.includes(l as Language))) return false;
-
-  // Validate frameworks
-  for (const fw of c.frameworks) {
-    if (typeof fw !== 'object' || fw === null) return false;
-    const framework = fw as Record<string, unknown>;
-    if (typeof framework.name !== 'string') return false;
-  }
-
-  // Validate custom patterns if present
-  if (c.customPatterns !== undefined) {
-    if (!Array.isArray(c.customPatterns)) return false;
-    for (const pattern of c.customPatterns) {
-      if (typeof pattern !== 'object' || pattern === null) return false;
-      const p = pattern as Record<string, unknown>;
-      if (typeof p.name !== 'string') return false;
-      if (typeof p.pattern !== 'string') return false;
-      if (typeof p.kind !== 'string') return false;
-
-      // Validate regex is compilable and reject patterns with known ReDoS risks
-      if (!isSafeRegex(p.pattern)) return false;
-    }
-  }
-
-  return true;
-}
-
-/**
- * Merge configuration with defaults
  */
 function mergeConfig(
   defaults: CodeGraphConfig,
@@ -217,81 +132,11 @@ export function updateConfig(
 /**
  * Add patterns to include list
  */
-export function addIncludePatterns(projectRoot: string, patterns: string[]): CodeGraphConfig {
-  const config = loadConfig(projectRoot);
-  const newPatterns = patterns.filter((p) => !config.include.includes(p));
-  config.include = [...config.include, ...newPatterns];
-  saveConfig(projectRoot, config);
-  return config;
-}
 
-/**
- * Add patterns to exclude list
- */
-export function addExcludePatterns(projectRoot: string, patterns: string[]): CodeGraphConfig {
-  const config = loadConfig(projectRoot);
-  const newPatterns = patterns.filter((p) => !config.exclude.includes(p));
-  config.exclude = [...config.exclude, ...newPatterns];
-  saveConfig(projectRoot, config);
-  return config;
-}
-
-/**
- * Add a custom pattern
- */
-export function addCustomPattern(
-  projectRoot: string,
-  name: string,
-  pattern: string,
-  kind: NodeKind
-): CodeGraphConfig {
-  const config = loadConfig(projectRoot);
-
-  if (!config.customPatterns) {
-    config.customPatterns = [];
-  }
-
-  // Check for duplicate name
-  const existing = config.customPatterns.find((p) => p.name === name);
-  if (existing) {
-    existing.pattern = pattern;
-    existing.kind = kind;
-  } else {
-    config.customPatterns.push({ name, pattern, kind });
-  }
-
-  saveConfig(projectRoot, config);
-  return config;
-}
-
-/**
- * Check if a file path matches the include/exclude patterns
- */
-export function shouldIncludeFile(filePath: string, config: CodeGraphConfig): boolean {
-  // Normalize to forward slashes so Windows backslash paths match glob patterns
-  filePath = normalizePath(filePath);
-
-  // Simple glob matching (for now, just check if any pattern matches)
-  // A full implementation would use a proper glob library
-
-  const matchesPattern = (pattern: string, filePath: string): boolean => {
-    return picomatch.isMatch(filePath, pattern, { dot: true });
-  };
-
-  // Check exclude patterns first
-  for (const pattern of config.exclude) {
-    if (matchesPattern(pattern, filePath)) {
-      return false;
-    }
-  }
-
-  // Check include patterns
-  for (const pattern of config.include) {
-    if (matchesPattern(pattern, filePath)) {
-      return true;
-    }
-  }
-
-  // Default to not including if no pattern matches
-  return false;
-}
+export { validateConfig } from './config-validate';
+export {
+  addIncludePatterns,
+  addExcludePatterns,
+  addCustomPattern,
+  shouldIncludeFile,
+} from './config-patterns';
