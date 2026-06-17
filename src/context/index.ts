@@ -17,36 +17,14 @@ import {
 } from '../types';
 import { QueryBuilder } from '../db/queries';
 import { GraphTraverser } from '../graph';
-import { formatContextAsMarkdown, formatContextAsJson } from './formatter';
 import { generateScoredCandidates } from './context-search';
 import {
-  extractCodeBlocks,
   extractNodeCode,
-  generateSummary,
-  getEntryPoints,
-  getRelatedFiles,
   assembleContextSubgraph,
 } from './context-helpers';
+import { buildContext as buildContextImpl } from './context-build';
 
 
-/**
- * Default options for context building
- *
- * Tuned for minimal context usage while still providing useful results:
- * - Fewer nodes and code blocks by default
- * - Smaller code block size limit
- * - Shallower traversal
- */
-const DEFAULT_BUILD_OPTIONS: Required<BuildContextOptions> = {
-  maxNodes: 20,           // Reduced from 50 - most tasks don't need 50 symbols
-  maxCodeBlocks: 5,       // Reduced from 10 - only show most relevant code
-  maxCodeBlockSize: 1500, // Reduced from 2000
-  includeCode: true,
-  format: 'markdown',
-  searchLimit: 3,         // Reduced from 5 - fewer entry points
-  traversalDepth: 1,      // Reduced from 2 - shallower graph expansion
-  minScore: 0.3,
-};
 
 /**
  * Node kinds that provide high information value in context results.
@@ -91,78 +69,16 @@ export class ContextBuilder {
     this.traverser = traverser;
   }
 
-  /**
-   * Build context for a task
-   *
-   * Pipeline:
-   * 1. Parse task input (string or {title, description})
-   * 2. Run semantic search to find entry points
-   * 3. Expand graph around entry points
-   * 4. Extract code blocks for key nodes
-   * 5. Format output for Claude
-   *
-   * @param input - Task description or object with title/description
-   * @param options - Build options
-   * @returns TaskContext (structured) or formatted string
-   */
   async buildContext(
     input: TaskInput,
-    options: BuildContextOptions = {}
+    options: BuildContextOptions = {},
   ): Promise<TaskContext | string> {
-    const opts = { ...DEFAULT_BUILD_OPTIONS, ...options };
-
-    // Parse input
-    const query = typeof input === 'string' ? input : `${input.title}${input.description ? `: ${input.description}` : ''}`;
-
-    // Find relevant context (semantic search + graph expansion)
-    const subgraph = await this.findRelevantContext(query, {
-      searchLimit: opts.searchLimit,
-      traversalDepth: opts.traversalDepth,
-      maxNodes: opts.maxNodes,
-      minScore: opts.minScore,
-    });
-
-    // Get entry points (nodes from semantic search)
-    const entryPoints = getEntryPoints(subgraph);
-
-    // Extract code blocks for key nodes
-    const codeBlocks = opts.includeCode
-      ? await extractCodeBlocks(subgraph, opts.maxCodeBlocks, opts.maxCodeBlockSize, this.projectRoot)
-      : [];
-
-    // Get related files
-    const relatedFiles = getRelatedFiles(subgraph);
-
-    // Generate summary
-    const summary = generateSummary(query, subgraph, entryPoints);
-
-    // Calculate stats
-    const stats = {
-      nodeCount: subgraph.nodes.size,
-      edgeCount: subgraph.edges.length,
-      fileCount: relatedFiles.length,
-      codeBlockCount: codeBlocks.length,
-      totalCodeSize: codeBlocks.reduce((sum, block) => sum + block.content.length, 0),
-    };
-
-    const context: TaskContext = {
-      query,
-      subgraph,
-      entryPoints,
-      codeBlocks,
-      relatedFiles,
-      summary,
-      stats,
-    };
-
-    // Return formatted output or raw context
-    if (opts.format === 'markdown') {
-      return formatContextAsMarkdown(context);
-    } else if (opts.format === 'json') {
-      return formatContextAsJson(context);
-    }
-
-    return context;
+    return buildContextImpl(
+      this.projectRoot,
+      this.findRelevantContext.bind(this),
+      input,
+      options,
+    );
   }
 
   /**
