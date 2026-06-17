@@ -30,10 +30,6 @@
 428 src/graph/queries.ts
 826 src/index.ts
 351 src/installer/index.ts
-254 src/installer/targets/claude.ts
-240 src/installer/targets/cursor.ts
-244 src/installer/targets/opencode.ts
-206 src/installer/targets/shared.ts
 348 src/mcp/explore-output.ts
 363 src/mcp/index.ts
 479 src/mcp/tools.ts
