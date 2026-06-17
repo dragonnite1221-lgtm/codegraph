@@ -21,7 +21,6 @@
 498 src/db/queries.ts
 474 src/db/sqlite-adapter.ts
 493 src/extraction/index.ts
-352 src/extraction/liquid-extractor.ts
 323 src/extraction/svelte-extractor.ts
 446 src/extraction/tree-sitter.ts
 826 src/index.ts
