@@ -52,4 +52,3 @@
 438 src/resolution/index.ts
 463 src/resolution/name-matcher.ts
 469 src/resolution/strip-comments.ts
-479 src/types.ts
