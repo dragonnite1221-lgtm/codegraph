@@ -58,9 +58,7 @@
 363 src/mcp/index.ts
 221 src/mcp/tool-definitions.ts
 479 src/mcp/tools.ts
-244 src/resolution/frameworks/cargo-workspace.ts
 246 src/resolution/frameworks/csharp.ts
-261 src/resolution/frameworks/express.ts
 288 src/resolution/frameworks/laravel.ts
 297 src/resolution/frameworks/python.ts
 309 src/resolution/frameworks/react.ts
