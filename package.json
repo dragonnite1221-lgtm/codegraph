@@ -23,7 +23,8 @@
     "test:watch": "vitest",
     "test:eval": "vitest run __tests__/evaluation/",
     "eval": "npm run build && tsx __tests__/evaluation/runner.ts",
-    "clean": "node -e \"const fs=require('fs');fs.rmSync('dist',{recursive:true,force:true})\""
+    "clean": "node -e \"const fs=require('fs');fs.rmSync('dist',{recursive:true,force:true})\"",
+    "check:file-size": "node scripts/check-file-size.cjs"
   },
   "keywords": [
     "code-intelligence",
