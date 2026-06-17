@@ -7,6 +7,16 @@
 import { Node } from '../../types';
 import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from '../types';
 import { stripCommentsForRegex } from '../strip-comments';
+import {
+  SERVICE_DIRS,
+  REPO_DIRS,
+  CONTROLLER_DIRS,
+  ENTITY_DIRS,
+  COMPONENT_DIRS,
+  CLASS_KINDS,
+  SERVICE_KINDS,
+  resolveByNameAndKind,
+} from './java-resolve';
 
 export const springResolver: FrameworkResolver = {
   name: 'spring',
@@ -168,39 +178,3 @@ export const springResolver: FrameworkResolver = {
     return { nodes, references };
   },
 };
-
-// Directory patterns
-const SERVICE_DIRS = ['/service/', '/services/'];
-const REPO_DIRS = ['/repository/', '/repositories/'];
-const CONTROLLER_DIRS = ['/controller/', '/controllers/'];
-const ENTITY_DIRS = ['/entity/', '/entities/', '/model/', '/models/', '/domain/'];
-const COMPONENT_DIRS = ['/component/', '/components/', '/config/'];
-
-const CLASS_KINDS = new Set(['class']);
-const SERVICE_KINDS = new Set(['class', 'interface']);
-
-/**
- * Resolve a symbol by name using indexed queries instead of scanning all files.
- */
-function resolveByNameAndKind(
-  name: string,
-  kinds: Set<string>,
-  preferredDirPatterns: string[],
-  context: ResolutionContext,
-): string | null {
-  const candidates = context.getNodesByName(name);
-  if (candidates.length === 0) return null;
-
-  const kindFiltered = candidates.filter((n) => kinds.has(n.kind));
-  if (kindFiltered.length === 0) return null;
-
-  // Prefer candidates in framework-conventional directories
-  const preferred = kindFiltered.filter((n) =>
-    preferredDirPatterns.some((d) => n.filePath.includes(d))
-  );
-
-  if (preferred.length > 0) return preferred[0]!.id;
-
-  // Fall back to any match
-  return kindFiltered[0]!.id;
-}
