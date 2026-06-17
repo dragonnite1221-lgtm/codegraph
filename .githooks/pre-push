@@ -1,0 +1,4 @@
+#!/bin/sh
+# Pre-push gate: block pushes that introduce new 200-line+ TypeScript files.
+# Enable once with:  git config core.hooksPath .githooks
+exec node scripts/check-file-size.cjs

@@ -102,6 +102,8 @@ Tests live in `__tests__/` and mirror the module they cover. Notable ones beyond
 
 Tests create temp dirs with `fs.mkdtempSync` and clean up in `afterEach`. They write real files and exercise real SQLite — there is no DB mocking.
 
+- `mcp-initialize.test.ts` spawns the **built** server from `dist/`, so it asserts against the last `npm run build`, not your working tree. `npm test` runs `pretest` (build) first; a bare `npx vitest run __tests__/mcp-initialize.test.ts` skips the build and can fail on stale `dist/`. Run `npm run build` first when invoking that file directly.
+
 ## Releases
 
 Released to npm and mirrored as [GitHub Releases](https://github.com/colbymchenry/codegraph/releases). `CHANGELOG.md` is the source of truth; GitHub Release notes are extracted from it.
@@ -136,3 +138,4 @@ npm publish
 - The `0.7.x` line is in active multi-agent rollout. Any change to `src/installer/` (especially `targets/`) needs corresponding test coverage and a CHANGELOG entry — installer regressions break every new install silently.
 - When changing what the MCP tools do or how agents should use them, update `src/mcp/server-instructions.ts` (the MCP `initialize` playbook) and `src/installer/instructions-template.ts` (the agent-agnostic body). `.cursor/rules/codegraph.mdc` is **generated** from the template — run `node scripts/gen-cursor-rule.cjs` after editing it, never hand-edit the `.mdc` body. `__tests__/instructions-sync.test.ts` enforces the sync: the `.mdc` body must equal `INSTRUCTIONS_TEMPLATE`, and all three docs must reference exactly the tools the MCP server registers.
 - CodeGraph provides **code context**, not product requirements. For new features, ask the user about UX, edge cases, and acceptance criteria — the graph won't tell you.
+- **200-line file-size gate.** `scripts/check-file-size.cjs` (`LIMIT = 200`, roots `src/` + `__tests__/`, excludes `.d.ts`) freezes existing oversized files in `scripts/file-size-baseline.txt` and blocks new violations, baseline growth, and stale entries. New `src/` files must stay ≤200 lines; never grow a baselined file. The CI workflow runs it, and `.githooks/pre-push` runs it locally — enable once with `git config core.hooksPath .githooks`. Regenerate the baseline only when you've genuinely shrunk files: `node scripts/check-file-size.cjs --write-baseline`. Burndown plan + per-file split strategy: `docs/plans/file-size-200-burndown-inventory.md`.
