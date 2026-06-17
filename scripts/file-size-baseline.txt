@@ -25,7 +25,6 @@
 238 src/extraction/languages/kotlin.ts
 352 src/extraction/liquid-extractor.ts
 241 src/extraction/parse-worker-pool.ts
-491 src/extraction/pascal-extraction-helpers.ts
 323 src/extraction/svelte-extractor.ts
 446 src/extraction/tree-sitter.ts
 428 src/graph/queries.ts
