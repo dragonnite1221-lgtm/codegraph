@@ -22,7 +22,6 @@
 498 src/db/queries.ts
 474 src/db/sqlite-adapter.ts
 428 src/extraction/extractors-decl.ts
-357 src/extraction/extractors-misc.ts
 493 src/extraction/index.ts
 238 src/extraction/languages/kotlin.ts
 352 src/extraction/liquid-extractor.ts
