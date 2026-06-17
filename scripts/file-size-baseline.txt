@@ -43,7 +43,6 @@
 491 src/extraction/pascal-extraction-helpers.ts
 323 src/extraction/svelte-extractor.ts
 235 src/extraction/sync-operations.ts
-209 src/extraction/tree-sitter-types.ts
 446 src/extraction/tree-sitter.ts
 209 src/extraction/variable-extraction.ts
 428 src/graph/queries.ts
@@ -61,7 +60,6 @@
 246 src/resolution/frameworks/csharp.ts
 297 src/resolution/frameworks/python.ts
 309 src/resolution/frameworks/react.ts
-239 src/resolution/frameworks/rust.ts
 429 src/resolution/frameworks/swift.ts
 338 src/resolution/frameworks/vue.ts
 391 src/resolution/import-extractors.ts
