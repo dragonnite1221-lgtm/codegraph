@@ -30,7 +30,6 @@
 274 src/db/search-queries.ts
 474 src/db/sqlite-adapter.ts
 260 src/directory.ts
-240 src/errors.ts
 428 src/extraction/extractors-decl.ts
 357 src/extraction/extractors-misc.ts
 320 src/extraction/file-scanner.ts
@@ -38,7 +37,6 @@
 493 src/extraction/index.ts
 238 src/extraction/languages/kotlin.ts
 352 src/extraction/liquid-extractor.ts
-241 src/extraction/member-extraction.ts
 241 src/extraction/parse-worker-pool.ts
 491 src/extraction/pascal-extraction-helpers.ts
 323 src/extraction/svelte-extractor.ts

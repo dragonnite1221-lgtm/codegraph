@@ -3,15 +3,16 @@ import type { Node as SyntaxNode } from 'web-tree-sitter';
 import type { Node, NodeKind } from '../types';
 import { getChildByField, getNodeText, getPrecedingDocstring } from './tree-sitter-helpers';
 import type { LanguageExtractor } from './tree-sitter-types';
+import { extractPhpPropertyElements, extractDeclaratorFields } from './member-extraction-helpers';
 
-type CreateMemberNode = (
+export type CreateMemberNode = (
   kind: NodeKind,
   name: string,
   node: SyntaxNode,
   metadata?: Partial<Node>
 ) => Node | null;
 
-type ExtractDecoratorsFor = (declNode: SyntaxNode, decoratedId: string) => void;
+export type ExtractDecoratorsFor = (declNode: SyntaxNode, decoratedId: string) => void;
 
 interface ExtractClassMemberOptions {
   node: SyntaxNode;
@@ -150,92 +151,3 @@ export function extractFieldDeclaration({
   }
 }
 
-function extractPhpPropertyElements(
-  node: SyntaxNode,
-  source: string,
-  context: {
-    createNode: CreateMemberNode;
-    docstring: string | undefined;
-    visibility: Node['visibility'];
-    isStatic: boolean;
-  }
-): boolean {
-  const propElements = node.namedChildren.filter(
-    (child: SyntaxNode) => child.type === 'property_element'
-  );
-  if (propElements.length === 0) return false;
-
-  const typeNode = node.namedChildren.find(
-    (child: SyntaxNode) =>
-      child.type !== 'visibility_modifier' &&
-      child.type !== 'static_modifier' &&
-      child.type !== 'readonly_modifier' &&
-      child.type !== 'property_element' &&
-      child.type !== 'var_modifier'
-  );
-  const typeText = typeNode ? getNodeText(typeNode, source) : undefined;
-
-  for (const elem of propElements) {
-    const varName = elem.namedChildren.find(
-      (child: SyntaxNode) => child.type === 'variable_name'
-    );
-    const nameNode = varName?.namedChildren.find(
-      (child: SyntaxNode) => child.type === 'name'
-    );
-    if (!nameNode) continue;
-
-    const name = getNodeText(nameNode, source);
-    context.createNode('field', name, elem, {
-      docstring: context.docstring,
-      signature: typeText ? `${typeText} $${name}` : `$${name}`,
-      visibility: context.visibility,
-      isStatic: context.isStatic,
-    });
-  }
-
-  return true;
-}
-
-function extractDeclaratorFields(
-  node: SyntaxNode,
-  source: string,
-  declarators: SyntaxNode[],
-  context: {
-    createNode: CreateMemberNode;
-    extractDecoratorsFor: ExtractDecoratorsFor;
-    docstring: string | undefined;
-    visibility: Node['visibility'];
-    isStatic: boolean;
-  }
-): void {
-  const varDecl = node.namedChildren.find(
-    (child: SyntaxNode) => child.type === 'variable_declaration'
-  );
-  const typeSearchNode = varDecl ?? node;
-  const typeNode = typeSearchNode.namedChildren.find(
-    (child: SyntaxNode) =>
-      child.type !== 'modifiers' &&
-      child.type !== 'modifier' &&
-      child.type !== 'variable_declarator' &&
-      child.type !== 'variable_declaration' &&
-      child.type !== 'marker_annotation' &&
-      child.type !== 'annotation'
-  );
-  const typeText = typeNode ? getNodeText(typeNode, source) : undefined;
-
-  for (const decl of declarators) {
-    const nameNode =
-      getChildByField(decl, 'name') ||
-      decl.namedChildren.find((child: SyntaxNode) => child.type === 'identifier');
-    if (!nameNode) continue;
-
-    const name = getNodeText(nameNode, source);
-    const fieldNode = context.createNode('field', name, decl, {
-      docstring: context.docstring,
-      signature: typeText ? `${typeText} ${name}` : name,
-      visibility: context.visibility,
-      isStatic: context.isStatic,
-    });
-    if (fieldNode) context.extractDecoratorsFor(node, fieldNode.id);
-  }
-}
