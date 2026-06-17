@@ -55,7 +55,6 @@
 359 src/resolution/import-resolver.ts
 438 src/resolution/index.ts
 463 src/resolution/name-matcher.ts
-242 src/resolution/path-aliases.ts
 469 src/resolution/strip-comments.ts
 342 src/search/query-utils.ts
 479 src/types.ts
