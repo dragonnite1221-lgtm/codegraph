@@ -28,4 +28,3 @@
 363 src/mcp/index.ts
 479 src/mcp/tools.ts
 438 src/resolution/index.ts
-463 src/resolution/name-matcher.ts
