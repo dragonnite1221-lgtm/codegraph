@@ -50,4 +50,3 @@
 359 src/resolution/import-resolver.ts
 438 src/resolution/index.ts
 463 src/resolution/name-matcher.ts
-469 src/resolution/strip-comments.ts
