@@ -22,7 +22,6 @@
 239 src/context/index.ts
 318 src/db/node-queries.ts
 498 src/db/queries.ts
-295 src/db/search-internals.ts
 474 src/db/sqlite-adapter.ts
 428 src/extraction/extractors-decl.ts
 357 src/extraction/extractors-misc.ts
