@@ -43,6 +43,5 @@
 363 src/mcp/index.ts
 221 src/mcp/tool-definitions.ts
 479 src/mcp/tools.ts
-391 src/resolution/import-extractors.ts
 438 src/resolution/index.ts
 463 src/resolution/name-matcher.ts
