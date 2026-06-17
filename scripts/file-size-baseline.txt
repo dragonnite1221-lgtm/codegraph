@@ -27,7 +27,6 @@
 498 src/db/queries.ts
 295 src/db/search-internals.ts
 474 src/db/sqlite-adapter.ts
-260 src/directory.ts
 428 src/extraction/extractors-decl.ts
 357 src/extraction/extractors-misc.ts
 320 src/extraction/file-scanner.ts
