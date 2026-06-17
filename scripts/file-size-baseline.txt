@@ -57,7 +57,6 @@
 363 src/mcp/index.ts
 221 src/mcp/tool-definitions.ts
 479 src/mcp/tools.ts
-246 src/resolution/frameworks/csharp.ts
 429 src/resolution/frameworks/swift.ts
 338 src/resolution/frameworks/vue.ts
 391 src/resolution/import-extractors.ts
