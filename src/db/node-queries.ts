@@ -4,6 +4,8 @@
  * Prepared statements and lookups for node CRUD on the knowledge graph.
  * Mirrors the delegation pattern used by UnresolvedReferenceQueries so the
  * QueryBuilder stays thin while node-specific statements live in one place.
+ * Read getters live in node-read-queries.ts and insert/update SQL in
+ * node-queries-sql.ts to stay within the file-size gate.
  */
 
 import type {
@@ -13,7 +15,6 @@ import type {
   SearchResult,
 } from '../types';
 import type { SqliteDatabase, SqliteStatement } from './sqlite-adapter';
-import { type NodeRow, rowToNode } from './row-mappers';
 import {
   describeNodeRequiredFields,
   isNodePersistable,
@@ -25,63 +26,23 @@ import {
   runFindNodesByNameSubstring,
   runSearchNodes,
 } from './search-queries';
+import { INSERT_NODE_SQL, UPDATE_NODE_SQL } from './node-queries-sql';
+import {
+  type NodeStmts,
+  getAllNodeNames,
+  getAllNodes,
+  getNodeById,
+  getNodesByFile,
+  getNodesByKind,
+  getNodesByLowerName,
+  getNodesByName,
+  getNodesByQualifiedNameExact,
+} from './node-read-queries';
 
 type StatementRunner = <T>(sql: string, fn: (stmt: SqliteStatement) => T) => T;
 
-const INSERT_NODE_SQL = `
-  INSERT OR REPLACE INTO nodes (
-    id, kind, name, qualified_name, file_path, language,
-    start_line, end_line, start_column, end_column,
-    docstring, signature, visibility,
-    is_exported, is_async, is_static, is_abstract,
-    decorators, type_parameters, updated_at
-  ) VALUES (
-    @id, @kind, @name, @qualifiedName, @filePath, @language,
-    @startLine, @endLine, @startColumn, @endColumn,
-    @docstring, @signature, @visibility,
-    @isExported, @isAsync, @isStatic, @isAbstract,
-    @decorators, @typeParameters, @updatedAt
-  )
-`;
-
-const UPDATE_NODE_SQL = `
-  UPDATE nodes SET
-    kind = @kind,
-    name = @name,
-    qualified_name = @qualifiedName,
-    file_path = @filePath,
-    language = @language,
-    start_line = @startLine,
-    end_line = @endLine,
-    start_column = @startColumn,
-    end_column = @endColumn,
-    docstring = @docstring,
-    signature = @signature,
-    visibility = @visibility,
-    is_exported = @isExported,
-    is_async = @isAsync,
-    is_static = @isStatic,
-    is_abstract = @isAbstract,
-    decorators = @decorators,
-    type_parameters = @typeParameters,
-    updated_at = @updatedAt
-  WHERE id = @id
-`;
-
 export class NodeQueries {
-  private stmts: {
-    insertNode?: SqliteStatement;
-    updateNode?: SqliteStatement;
-    deleteNode?: SqliteStatement;
-    deleteNodesByFile?: SqliteStatement;
-    getNodeById?: SqliteStatement;
-    getNodesByFile?: SqliteStatement;
-    getNodesByKind?: SqliteStatement;
-    getNodesByName?: SqliteStatement;
-    getNodesByQualifiedNameExact?: SqliteStatement;
-    getNodesByLowerName?: SqliteStatement;
-    getAllNodeNames?: SqliteStatement;
-  } = {};
+  private stmts: NodeStmts = {};
 
   constructor(
     private readonly db: SqliteDatabase,
@@ -160,159 +121,72 @@ export class NodeQueries {
     this.stmts.deleteNodesByFile.run(filePath);
   }
 
-  /**
-   * Get a node by ID
-   */
-  getNodeById(id: string): Node | null {
-    const cached = this.cache.get(id);
-    if (cached) {
-      return cached;
-    }
-
-    if (!this.stmts.getNodeById) {
-      this.stmts.getNodeById = this.db.prepare('SELECT * FROM nodes WHERE id = ?');
-    }
-    const row = this.stmts.getNodeById.get(id) as NodeRow | undefined;
-    if (!row) {
-      return null;
-    }
-
-    const node = rowToNode(row);
-    this.cache.set(node);
-    return node;
-  }
-
-  /**
-   * Clear the node cache
-   */
+  /** Clear the node cache */
   clearCache(): void {
     this.cache.clear();
   }
 
-  /**
-   * Get all nodes in a file
-   */
+  getNodeById(id: string): Node | null {
+    return getNodeById(this.db, this.stmts, this.cache, id);
+  }
+
   getNodesByFile(filePath: string): Node[] {
-    if (!this.stmts.getNodesByFile) {
-      this.stmts.getNodesByFile = this.db.prepare(
-        'SELECT * FROM nodes WHERE file_path = ? ORDER BY start_line'
-      );
-    }
-    const rows = this.stmts.getNodesByFile.all(filePath) as NodeRow[];
-    return rows.map(rowToNode);
+    return getNodesByFile(this.db, this.stmts, filePath);
   }
 
-  /**
-   * Get all nodes of a specific kind
-   */
   getNodesByKind(kind: NodeKind): Node[] {
-    if (!this.stmts.getNodesByKind) {
-      this.stmts.getNodesByKind = this.db.prepare('SELECT * FROM nodes WHERE kind = ?');
-    }
-    const rows = this.stmts.getNodesByKind.all(kind) as NodeRow[];
-    return rows.map(rowToNode);
+    return getNodesByKind(this.db, this.stmts, kind);
   }
 
-  /**
-   * Get all nodes in the database
-   */
   getAllNodes(): Node[] {
-    const rows = this.runStatement('SELECT * FROM nodes', (stmt) => stmt.all() as NodeRow[]);
-    return rows.map(rowToNode);
+    return getAllNodes(this.runStatement);
   }
 
-  /**
-   * Get nodes by exact name match (uses idx_nodes_name index)
-   */
   getNodesByName(name: string): Node[] {
-    if (!this.stmts.getNodesByName) {
-      this.stmts.getNodesByName = this.db.prepare('SELECT * FROM nodes WHERE name = ?');
-    }
-    const rows = this.stmts.getNodesByName.all(name) as NodeRow[];
-    return rows.map(rowToNode);
+    return getNodesByName(this.db, this.stmts, name);
   }
 
-  /**
-   * Get nodes by exact qualified name match (uses idx_nodes_qualified_name index)
-   */
   getNodesByQualifiedNameExact(qualifiedName: string): Node[] {
-    if (!this.stmts.getNodesByQualifiedNameExact) {
-      this.stmts.getNodesByQualifiedNameExact = this.db.prepare(
-        'SELECT * FROM nodes WHERE qualified_name = ?'
-      );
-    }
-    const rows = this.stmts.getNodesByQualifiedNameExact.all(qualifiedName) as NodeRow[];
-    return rows.map(rowToNode);
+    return getNodesByQualifiedNameExact(this.db, this.stmts, qualifiedName);
   }
 
-  /**
-   * Get nodes by lowercase name match (uses idx_nodes_lower_name expression index)
-   */
   getNodesByLowerName(lowerName: string): Node[] {
-    if (!this.stmts.getNodesByLowerName) {
-      this.stmts.getNodesByLowerName = this.db.prepare(
-        'SELECT * FROM nodes WHERE lower(name) = ?'
-      );
-    }
-    const rows = this.stmts.getNodesByLowerName.all(lowerName) as NodeRow[];
-    return rows.map(rowToNode);
+    return getNodesByLowerName(this.db, this.stmts, lowerName);
   }
 
-  /**
-   * Get all distinct node names (lightweight — just name strings for pre-filtering)
-   */
   getAllNodeNames(): string[] {
-    if (!this.stmts.getAllNodeNames) {
-      this.stmts.getAllNodeNames = this.db.prepare('SELECT DISTINCT name FROM nodes');
-    }
-    const rows = this.stmts.getAllNodeNames.all() as Array<{ name: string }>;
-    return rows.map((r) => r.name);
+    return getAllNodeNames(this.db, this.stmts);
+  }
+
+  /** Shared dependencies for the search-queries helpers. */
+  private searchDeps() {
+    return {
+      runStatement: this.runStatement,
+      getAllNodeNames: () => this.getAllNodeNames(),
+    };
   }
 
   searchNodes(query: string, options: SearchOptions = {}): SearchResult[] {
-    return runSearchNodes(
-      {
-        runStatement: this.runStatement,
-        getAllNodeNames: () => this.getAllNodeNames(),
-      },
-      query,
-      options
-    );
+    return runSearchNodes(this.searchDeps(), query, options);
   }
 
   /**
-   * Find nodes by exact name match
-   *
-   * Used for hybrid search - looks up symbols by exact name or case-insensitive match.
-   * Returns high-confidence matches for known symbol names extracted from query.
+   * Find nodes by exact name match (hybrid search): exact or case-insensitive
+   * lookup, returning high-confidence matches for known symbol names.
    */
   findNodesByExactName(names: string[], options: SearchOptions = {}): SearchResult[] {
-    return runFindNodesByExactName(
-      {
-        runStatement: this.runStatement,
-        getAllNodeNames: () => this.getAllNodeNames(),
-      },
-      names,
-      options
-    );
+    return runFindNodesByExactName(this.searchDeps(), names, options);
   }
 
   /**
-   * Find nodes whose name contains a substring (LIKE-based).
-   * Useful for CamelCase-part matching where FTS fails because
-   * e.g. "TransportSearchAction" is one FTS token, not matchable by "Search"*.
+   * Find nodes whose name contains a substring (LIKE-based). Useful for
+   * CamelCase-part matching where FTS fails ("TransportSearchAction" is one
+   * FTS token, not matchable by "Search"*).
    */
   findNodesByNameSubstring(
     substring: string,
     options: SearchOptions & { excludePrefix?: boolean } = {}
   ): SearchResult[] {
-    return runFindNodesByNameSubstring(
-      {
-        runStatement: this.runStatement,
-        getAllNodeNames: () => this.getAllNodeNames(),
-      },
-      substring,
-      options
-    );
+    return runFindNodesByNameSubstring(this.searchDeps(), substring, options);
   }
 }

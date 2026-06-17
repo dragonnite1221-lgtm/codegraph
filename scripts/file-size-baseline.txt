@@ -18,7 +18,6 @@
 486 src/bin/codegraph.ts
 465 src/context/context-helpers.ts
 421 src/context/context-search.ts
-318 src/db/node-queries.ts
 498 src/db/queries.ts
 474 src/db/sqlite-adapter.ts
 493 src/extraction/index.ts
