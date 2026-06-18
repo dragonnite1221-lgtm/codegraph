@@ -24,5 +24,4 @@
 826 src/index.ts
 351 src/installer/index.ts
 363 src/mcp/index.ts
-479 src/mcp/tools.ts
 438 src/resolution/index.ts
