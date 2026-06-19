@@ -21,4 +21,3 @@
 493 src/extraction/index.ts
 446 src/extraction/tree-sitter.ts
 826 src/index.ts
-438 src/resolution/index.ts
