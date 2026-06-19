@@ -16,6 +16,5 @@
 266 __tests__/sync.test.ts
 291 __tests__/watcher.test.ts
 498 src/db/queries.ts
-474 src/db/sqlite-adapter.ts
 493 src/extraction/index.ts
 826 src/index.ts
