@@ -125,4 +125,5 @@ describe('CodeGraph Foundation', () => {
       cg.close();
     });
 
+  });
 });
