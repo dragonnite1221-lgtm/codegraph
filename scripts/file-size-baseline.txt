@@ -6,4 +6,3 @@
 495 __tests__/installer-targets.test.ts
 719 __tests__/pr19-improvements.test.ts
 849 __tests__/resolution.test.ts
-645 __tests__/security.test.ts
