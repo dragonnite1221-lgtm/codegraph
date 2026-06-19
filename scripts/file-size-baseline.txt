@@ -10,4 +10,3 @@
 719 __tests__/pr19-improvements.test.ts
 849 __tests__/resolution.test.ts
 645 __tests__/security.test.ts
-349 __tests__/sqlite-backend.test.ts
