@@ -2,4 +2,3 @@
 # Format: <line_count> <path>; limit=200.
 
 3654 __tests__/extraction.test.ts
-849 __tests__/resolution.test.ts
