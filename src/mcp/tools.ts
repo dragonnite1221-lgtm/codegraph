@@ -1,36 +1,36 @@
 /**
  * MCP Tool Definitions
  *
- * Defines the tools exposed by the CodeGraph MCP server.
+ * The ToolHandler wires the MCP tools to CodeGraph instances. Cross-project
+ * caching/lifecycle lives in ProjectCache (tool-project-cache.ts), the per-tool
+ * handlers in tool-handlers.ts, and arg coercion in tool-args.ts — split out to
+ * stay within the file-size gate.
+ *
+ * Supports cross-project queries via the projectPath parameter.
  */
 
-import CodeGraph, { findNearestCodeGraphRoot } from '../index';
-import type { NodeKind } from '../types';
-import { createHash } from 'crypto';
-import { writeFileSync } from 'fs';
-import { clamp } from '../utils';
-import { tmpdir } from 'os';
-import { isAbsolute, join, relative, resolve } from 'path';
-import { buildExploreOutput, getExploreBudget } from './explore-output';
-import {
-  DEFAULT_MCP_FILES_LIMIT,
-  filterMcpFiles,
-  formatMcpFiles,
-  limitMcpFiles,
-  type McpFileEntry,
-} from './files-output';
-import { buildContextOutput } from './context-output';
-import { buildNodeOutput, buildSearchOutput } from './lookup-output';
+import type CodeGraph from '../index';
+import { getExploreBudget } from './explore-output';
 import {
   findAllSymbols as resolveAllSymbols,
   findSymbol as resolveSymbol,
   type SymbolMatch,
   type SymbolMatches,
 } from './symbol-resolution';
-import { buildCallersOutput, buildCalleesOutput, buildImpactOutput } from './relationship-output';
-import { buildMcpStatusOutput } from './status-output';
 import { tools } from './tool-definitions';
 import type { ToolDefinition, ToolResult } from './tool-types';
+import { ProjectCache } from './tool-project-cache';
+import {
+  handleCallees,
+  handleCallers,
+  handleContext,
+  handleExplore,
+  handleFiles,
+  handleImpact,
+  handleNode,
+  handleSearch,
+  handleStatus,
+} from './tool-handlers';
 
 export { tools } from './tool-definitions';
 export { getExploreBudget, getExploreOutputBudget } from './explore-output';
@@ -39,82 +39,26 @@ export type { ExploreOutputBudget } from './explore-output';
 
 /** Maximum output length to prevent context bloat (characters) */
 const MAX_OUTPUT_LENGTH = 15000;
-const MAX_PROJECT_CACHE_SIZE = 32;
-
-function boundedNumber(value: unknown, fallback: number, min: number, max: number): number {
-  if (value == null || value === '') {
-    return fallback;
-  }
-  if (typeof value !== 'number' && typeof value !== 'string') {
-    return fallback;
-  }
-
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? clamp(parsed, min, max) : fallback;
-}
-
-function optionalBoundedNumber(value: unknown, min: number, max: number): number | undefined {
-  if (value == null || value === '') {
-    return undefined;
-  }
-  if (typeof value !== 'number' && typeof value !== 'string') {
-    return undefined;
-  }
-
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? clamp(parsed, min, max) : undefined;
-}
-
-function pathContains(parent: string, child: string): boolean {
-  const rel = relative(parent, child);
-  return rel === '' || (!!rel && !rel.startsWith('..') && !isAbsolute(rel));
-}
 
 /**
- * Mark a Claude session as having consulted MCP tools.
- * This enables Grep/Glob/Bash commands that would otherwise be blocked.
- */
-function markSessionConsulted(sessionId: string): void {
-  try {
-    const hash = createHash('md5').update(sessionId).digest('hex').slice(0, 16);
-    const markerPath = join(tmpdir(), `codegraph-consulted-${hash}`);
-    writeFileSync(markerPath, new Date().toISOString(), {
-      encoding: 'utf8',
-      flag: 'wx',
-      mode: 0o600,
-    });
-  } catch {
-    // Silently fail - don't break MCP on marker write failure
-  }
-}
-
-/**
- * Tool handler that executes tools against a CodeGraph instance
- *
- * Supports cross-project queries via the projectPath parameter.
+ * Tool handler that executes tools against a CodeGraph instance.
  * Other projects are opened on-demand and cached for performance.
  */
 export class ToolHandler {
-  // Cache of opened CodeGraph instances for cross-project queries, keyed by
-  // resolved project root to avoid duplicate SQLite handles for path aliases.
-  private projectCache: Map<string, CodeGraph> = new Map();
-  private activeExecutions = 0;
-  private pendingProjectCloses: Set<CodeGraph> = new Set();
+  private cache: ProjectCache;
 
-  constructor(private cg: CodeGraph | null) {}
-
-  /**
-   * Update the default CodeGraph instance (e.g. after lazy initialization)
-   */
-  setDefaultCodeGraph(cg: CodeGraph): void {
-    this.cg = cg;
+  constructor(cg: CodeGraph | null) {
+    this.cache = new ProjectCache(cg);
   }
 
-  /**
-   * Whether a default CodeGraph instance is available
-   */
+  /** Update the default CodeGraph instance (e.g. after lazy initialization) */
+  setDefaultCodeGraph(cg: CodeGraph): void {
+    this.cache.setDefault(cg);
+  }
+
+  /** Whether a default CodeGraph instance is available */
   hasDefaultCodeGraph(): boolean {
-    return this.cg !== null;
+    return this.cache.hasDefault();
   }
 
   /**
@@ -123,10 +67,11 @@ export class ToolHandler {
    * scaled to the number of indexed files.
    */
   getTools(): ToolDefinition[] {
-    if (!this.cg) return tools;
+    const cg = this.cache.getDefault();
+    if (!cg) return tools;
 
     try {
-      const stats = this.cg.getStats();
+      const stats = cg.getStats();
       const budget = getExploreBudget(stats.fileCount);
 
       return tools.map(tool => {
@@ -143,99 +88,18 @@ export class ToolHandler {
     }
   }
 
-  /**
-   * Get CodeGraph instance for a project
-   *
-   * If projectPath is provided, opens that project's CodeGraph (cached).
-   * Otherwise returns the default CodeGraph instance.
-   *
-   * Walks up parent directories to find the nearest .codegraph/ folder,
-   * similar to how git finds .git/ directories.
-   */
-  private getCodeGraph(projectPath?: string): CodeGraph {
-    if (!projectPath) {
-      if (!this.cg) {
-        throw new Error('CodeGraph not initialized for this project. Run \'codegraph init\' first.');
-      }
-      return this.cg;
-    }
-
-    const requestedPath = resolve(projectPath);
-
-    if (this.cg) {
-      const defaultRoot = resolve(this.cg.getProjectRoot());
-      if (pathContains(defaultRoot, requestedPath)) {
-        return this.cg;
-      }
-    }
-
-    // Walk up parent directories to find nearest .codegraph/
-    const resolvedRoot = findNearestCodeGraphRoot(requestedPath);
-
-    if (!resolvedRoot) {
-      throw new Error(`CodeGraph not initialized in ${projectPath}. Run 'codegraph init' in that project first.`);
-    }
-
-    if (this.cg && resolve(this.cg.getProjectRoot()) === resolvedRoot) {
-      return this.cg;
-    }
-
-    if (this.projectCache.has(resolvedRoot)) {
-      return this.projectCache.get(resolvedRoot)!;
-    }
-
-    const cg = CodeGraph.openSync(resolvedRoot);
-    this.projectCache.set(resolvedRoot, cg);
-    this.evictOldestCachedProjects();
-    return cg;
+  /** Get CodeGraph instance for a project (default, or opened on-demand). */
+  getCodeGraph(projectPath?: string): CodeGraph {
+    return this.cache.getCodeGraph(projectPath);
   }
 
-  private evictOldestCachedProjects(): void {
-    while (this.projectCache.size > MAX_PROJECT_CACHE_SIZE) {
-      const oldest = this.projectCache.entries().next().value;
-      if (!oldest) return;
-      const [projectRoot, cg] = oldest;
-      this.projectCache.delete(projectRoot);
-      this.closeProjectWhenIdle(cg);
-    }
-  }
-
-  private closeProjectWhenIdle(cg: CodeGraph): void {
-    if (this.activeExecutions > 0) {
-      this.pendingProjectCloses.add(cg);
-      return;
-    }
-    cg.close();
-  }
-
-  private flushPendingProjectCloses(): void {
-    if (this.activeExecutions > 0) return;
-    for (const cg of this.pendingProjectCloses) {
-      cg.close();
-    }
-    this.pendingProjectCloses.clear();
-  }
-
-  /**
-   * Close all cached project connections
-   */
+  /** Close all cached project connections */
   closeAll(): void {
-    for (const cg of new Set([
-      ...(this.cg ? [this.cg] : []),
-      ...this.projectCache.values(),
-      ...this.pendingProjectCloses,
-    ])) {
-      cg.close();
-    }
-    this.cg = null;
-    this.projectCache.clear();
-    this.pendingProjectCloses.clear();
+    this.cache.closeAll();
   }
 
-  /**
-   * Validate that a value is a non-empty string
-   */
-  private validateString(value: unknown, name: string): string | ToolResult {
+  /** Validate that a value is a non-empty string */
+  validateString(value: unknown, name: string): string | ToolResult {
     if (typeof value !== 'string' || value.length === 0) {
       return this.errorResult(`${name} must be a non-empty string`);
     }
@@ -246,202 +110,27 @@ export class ToolHandler {
    * Execute a tool by name
    */
   async execute(toolName: string, args: Record<string, unknown>): Promise<ToolResult> {
-    this.activeExecutions++;
+    this.cache.beginExecution();
     try {
       switch (toolName) {
-        case 'codegraph_search':
-          return await this.handleSearch(args);
-        case 'codegraph_context':
-          return await this.handleContext(args);
-        case 'codegraph_callers':
-          return await this.handleCallers(args);
-        case 'codegraph_callees':
-          return await this.handleCallees(args);
-        case 'codegraph_impact':
-          return await this.handleImpact(args);
-        case 'codegraph_explore':
-          return await this.handleExplore(args);
-        case 'codegraph_node':
-          return await this.handleNode(args);
-        case 'codegraph_status':
-          return await this.handleStatus(args);
-        case 'codegraph_files':
-          return await this.handleFiles(args);
+        case 'codegraph_search': return await handleSearch(this, args);
+        case 'codegraph_context': return await handleContext(this, args);
+        case 'codegraph_callers': return await handleCallers(this, args);
+        case 'codegraph_callees': return await handleCallees(this, args);
+        case 'codegraph_impact': return await handleImpact(this, args);
+        case 'codegraph_explore': return await handleExplore(this, args);
+        case 'codegraph_node': return await handleNode(this, args);
+        case 'codegraph_status': return await handleStatus(this, args);
+        case 'codegraph_files': return await handleFiles(this, args);
         default:
           return this.errorResult(`Unknown tool: ${toolName}`);
       }
     } catch (err) {
       return this.errorResult(`Tool execution failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
-      this.activeExecutions--;
-      this.flushPendingProjectCloses();
+      this.cache.endExecution();
     }
   }
-
-  /**
-   * Handle codegraph_search
-   */
-  private async handleSearch(args: Record<string, unknown>): Promise<ToolResult> {
-    const query = this.validateString(args.query, 'query');
-    if (typeof query !== 'string') return query;
-
-    const cg = this.getCodeGraph(args.projectPath as string | undefined);
-    const kind = args.kind as NodeKind | undefined;
-    const limit = boundedNumber(args.limit, 10, 1, 100);
-
-    return this.textResult(this.truncateOutput(buildSearchOutput(cg, query, { limit, kind })));
-  }
-
-  /**
-   * Handle codegraph_context
-   */
-  private async handleContext(args: Record<string, unknown>): Promise<ToolResult> {
-    const task = this.validateString(args.task, 'task');
-    if (typeof task !== 'string') return task;
-
-    // Mark session as consulted (enables Grep/Glob/Bash)
-    const sessionId = process.env.CLAUDE_SESSION_ID;
-    if (sessionId) {
-      markSessionConsulted(sessionId);
-    }
-
-    const cg = this.getCodeGraph(args.projectPath as string | undefined);
-    const maxNodes = boundedNumber(args.maxNodes, 20, 1, 100);
-    const includeCode = args.includeCode !== false;
-
-    return this.textResult(await buildContextOutput(cg, task, { maxNodes, includeCode }));
-  }
-
-  /**
-   * Handle codegraph_callers
-   */
-  private async handleCallers(args: Record<string, unknown>): Promise<ToolResult> {
-    const symbol = this.validateString(args.symbol, 'symbol');
-    if (typeof symbol !== 'string') return symbol;
-
-    const cg = this.getCodeGraph(args.projectPath as string | undefined);
-    const limit = boundedNumber(args.limit, 20, 1, 100);
-
-    return this.textResult(this.truncateOutput(buildCallersOutput(cg, symbol, limit)));
-  }
-
-  /**
-   * Handle codegraph_callees
-   */
-  private async handleCallees(args: Record<string, unknown>): Promise<ToolResult> {
-    const symbol = this.validateString(args.symbol, 'symbol');
-    if (typeof symbol !== 'string') return symbol;
-
-    const cg = this.getCodeGraph(args.projectPath as string | undefined);
-    const limit = boundedNumber(args.limit, 20, 1, 100);
-
-    return this.textResult(this.truncateOutput(buildCalleesOutput(cg, symbol, limit)));
-  }
-
-  /**
-   * Handle codegraph_impact
-   */
-  private async handleImpact(args: Record<string, unknown>): Promise<ToolResult> {
-    const symbol = this.validateString(args.symbol, 'symbol');
-    if (typeof symbol !== 'string') return symbol;
-
-    const cg = this.getCodeGraph(args.projectPath as string | undefined);
-    const depth = boundedNumber(args.depth, 2, 1, 10);
-
-    return this.textResult(this.truncateOutput(buildImpactOutput(cg, symbol, depth)));
-  }
-
-  /**
-   * Handle codegraph_explore — deep exploration in a single call
-   *
-   * Strategy: find relevant symbols via graph traversal, group by file,
-   * then read contiguous file sections covering all symbols per file.
-   * This replaces multiple codegraph_node + Read calls.
-   *
-   * Output size is adaptive to project file count via
-   * `getExploreOutputBudget` — see #185 for why a fixed 35k cap was a
-   * tax on small projects while earning its keep on large ones.
-   */
-  private async handleExplore(args: Record<string, unknown>): Promise<ToolResult> {
-    const query = this.validateString(args.query, 'query');
-    if (typeof query !== 'string') return query;
-
-    const cg = this.getCodeGraph(args.projectPath as string | undefined);
-    const output = await buildExploreOutput(cg, query, {
-      maxFiles: optionalBoundedNumber(args.maxFiles, 1, 20),
-    });
-    return this.textResult(output);
-  }
-
-  /**
-   * Handle codegraph_node
-   */
-  private async handleNode(args: Record<string, unknown>): Promise<ToolResult> {
-    const symbol = this.validateString(args.symbol, 'symbol');
-    if (typeof symbol !== 'string') return symbol;
-
-    const cg = this.getCodeGraph(args.projectPath as string | undefined);
-    const includeCode = args.includeCode === true;
-
-    return this.textResult(this.truncateOutput(await buildNodeOutput(cg, symbol, includeCode)));
-  }
-
-  /**
-   * Handle codegraph_status
-   */
-  private async handleStatus(args: Record<string, unknown>): Promise<ToolResult> {
-    const cg = this.getCodeGraph(args.projectPath as string | undefined);
-    return this.textResult(buildMcpStatusOutput(cg));
-  }
-
-  /**
-   * Handle codegraph_files - get project file structure from the index
-   */
-  private async handleFiles(args: Record<string, unknown>): Promise<ToolResult> {
-    const cg = this.getCodeGraph(args.projectPath as string | undefined);
-    const pathFilter = args.path as string | undefined;
-    const pattern = args.pattern as string | undefined;
-    const format = (args.format as 'tree' | 'flat' | 'grouped') || 'tree';
-    const includeMetadata = args.includeMetadata !== false;
-    const maxDepth = optionalBoundedNumber(args.maxDepth, 1, 20);
-    const limit = boundedNumber(args.limit, DEFAULT_MCP_FILES_LIMIT, 1, 5000);
-
-    const totalIndexedFiles = pathFilter || pattern ? undefined : cg.countFiles();
-    if (totalIndexedFiles === 0) {
-      return this.textResult('No files indexed. Run `codegraph index` first.');
-    }
-
-    let files: McpFileEntry[];
-    let omitted = 0;
-    if (pattern) {
-      const pathScopedFiles = cg.getFiles({ pathPrefix: pathFilter });
-      files = filterMcpFiles(pathScopedFiles, { pattern });
-      const limited = limitMcpFiles(files, limit);
-      files = limited.files;
-      omitted = limited.omitted;
-    } else {
-      const totalMatches = cg.countFiles({ pathPrefix: pathFilter });
-      files = cg.getFiles({ pathPrefix: pathFilter, limit });
-      omitted = Math.max(0, totalMatches - files.length);
-    }
-
-    if (files.length === 0) {
-      return this.textResult(`No files found matching the criteria.`);
-    }
-
-    const output = formatMcpFiles(files, {
-      includeMetadata,
-      format,
-      maxDepth,
-      omitted,
-    });
-
-    return this.textResult(this.truncateOutput(output));
-  }
-
-  // =========================================================================
-  // Symbol resolution helpers
-  // =========================================================================
 
   // Kept as wrappers for compatibility with existing tests that inspect
   // ToolHandler internals; the implementation lives in symbol-resolution.ts.
@@ -453,10 +142,8 @@ export class ToolHandler {
     return resolveAllSymbols(cg, symbol);
   }
 
-  /**
-   * Truncate output if it exceeds the maximum length
-   */
-  private truncateOutput(text: string): string {
+  /** Truncate output if it exceeds the maximum length */
+  truncateOutput(text: string): string {
     if (text.length <= MAX_OUTPUT_LENGTH) return text;
     const truncated = text.slice(0, MAX_OUTPUT_LENGTH);
     const lastNewline = truncated.lastIndexOf('\n');
@@ -464,7 +151,7 @@ export class ToolHandler {
     return truncated.slice(0, cutPoint) + '\n\n... (output truncated)';
   }
 
-  private textResult(text: string): ToolResult {
+  textResult(text: string): ToolResult {
     return {
       content: [{ type: 'text', text }],
     };

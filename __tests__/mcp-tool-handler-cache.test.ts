@@ -3,9 +3,9 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { ToolHandler } from '../src/mcp/tools';
+import { ProjectCache } from '../src/mcp/tool-project-cache';
 
-describe('MCP ToolHandler project cache lifecycle', () => {
+describe('MCP ProjectCache lifecycle', () => {
   const tempDirs: string[] = [];
 
   afterEach(() => {
@@ -27,14 +27,14 @@ describe('MCP ToolHandler project cache lifecycle', () => {
       getProjectRoot: vi.fn(() => projectRoot),
       close: vi.fn(),
     };
-    const handler = new ToolHandler(defaultCg as any) as any;
+    const handler = new ProjectCache(defaultCg as any) as any;
 
     expect(handler.getCodeGraph(projectRoot)).toBe(defaultCg);
     expect(handler.projectCache.size).toBe(0);
   });
 
   it('defers evicted project closes until active executions finish', () => {
-    const handler = new ToolHandler(null) as any;
+    const handler = new ProjectCache(null) as any;
     const project = { close: vi.fn() };
 
     handler.activeExecutions = 1;
@@ -52,7 +52,7 @@ describe('MCP ToolHandler project cache lifecycle', () => {
 
   it('closes default and cached projects during closeAll', () => {
     const defaultCg = { close: vi.fn() };
-    const handler = new ToolHandler(defaultCg as any) as any;
+    const handler = new ProjectCache(defaultCg as any) as any;
     const cached = { close: vi.fn() };
     const pending = { close: vi.fn() };
 
