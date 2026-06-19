@@ -3,7 +3,6 @@
 
 374 __tests__/context.test.ts
 3654 __tests__/extraction.test.ts
-371 __tests__/foundation.test.ts
 770 __tests__/frameworks.test.ts
 435 __tests__/graph.test.ts
 495 __tests__/installer-targets.test.ts
