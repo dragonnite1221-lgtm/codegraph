@@ -3,7 +3,6 @@
 
 3654 __tests__/extraction.test.ts
 770 __tests__/frameworks.test.ts
-435 __tests__/graph.test.ts
 495 __tests__/installer-targets.test.ts
 719 __tests__/pr19-improvements.test.ts
 849 __tests__/resolution.test.ts
