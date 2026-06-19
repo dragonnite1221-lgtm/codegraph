@@ -15,4 +15,3 @@
 349 __tests__/sqlite-backend.test.ts
 266 __tests__/sync.test.ts
 291 __tests__/watcher.test.ts
-826 src/index.ts
