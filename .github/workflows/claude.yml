@@ -1,0 +1,43 @@
+name: Claude Code Review
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  issues:
+    types: [opened]
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  claude:
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'issues' && contains(github.event.issue.body, '@claude')) ||
+      (github.event_name == 'pull_request')
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+      - uses: anthropics/claude-code-action@beta
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_ACCESS_TOKEN }}
+          # The action's default model can 404 when retired; pin a current one.
+          model: claude-sonnet-4-6
+          direct_prompt: |
+            이 PR의 변경사항을 한국어로 리뷰해줘. 다음을 확인해:
+            - 코드 품질 및 가독성
+            - 버그 가능성 및 엣지 케이스
+            - 보안 문제 (API 키·토큰 하드코딩, 외부 입력 경계 검증)
+            - 프로젝트 규칙(CLAUDE.md/AGENTS.md) 준수 여부
+            - 테스트 커버리지 누락 여부
