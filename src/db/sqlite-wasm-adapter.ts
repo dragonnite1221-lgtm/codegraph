@@ -17,6 +17,7 @@ import { resolveParams, translateNamedParams } from './sqlite-params';
 export class WasmDatabaseAdapter implements SqliteDatabase {
   private _db: any;
   private _closed = false;
+  private _inTransaction = false;
   // Track WASM statement handles so VACUUM and close can finalize them.
   // The wrapper can lazily reprepare after a release, preserving the reusable
   // statement contract that callers expect from better-sqlite3.
@@ -30,6 +31,10 @@ export class WasmDatabaseAdapter implements SqliteDatabase {
 
   get open(): boolean {
     return this._db.isOpen;
+  }
+
+  get inTransaction(): boolean {
+    return this._inTransaction;
   }
 
   prepare(sql: string): SqliteStatement {
@@ -138,6 +143,16 @@ export class WasmDatabaseAdapter implements SqliteDatabase {
 
   transaction<T>(fn: (...args: any[]) => T): (...args: any[]) => T {
     return (...args: any[]) => {
+      // Unlike better-sqlite3 (which nests via SAVEPOINTs), this adapter uses a
+      // flat BEGIN/COMMIT and cannot nest. Fail loudly rather than emit an
+      // "cannot start a transaction within a transaction" SQLite error so a
+      // future nested-transaction call is caught at the wasm boundary.
+      if (this._inTransaction) {
+        // No SAVEPOINT support here; callers must check `inTransaction` and run
+        // inline rather than opening a nested transaction on the wasm backend.
+        throw new Error('sqlite-wasm adapter does not support nested transactions');
+      }
+      this._inTransaction = true;
       this._db.exec('BEGIN');
       try {
         const result = fn(...args);
@@ -145,6 +160,8 @@ export class WasmDatabaseAdapter implements SqliteDatabase {
         return result;
       } catch (error) {
         rollbackAndRethrowTransactionError(this._db, error);
+      } finally {
+        this._inTransaction = false;
       }
     };
   }

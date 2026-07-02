@@ -62,6 +62,12 @@ export interface SyncResult {
   nodesUpdated: number;
   durationMs: number;
   changedFilePaths?: string[];
+  /**
+   * Set when the sync could not run (e.g. the file lock was held by another
+   * process). Lets callers distinguish a genuine "no changes" (all-zero, no
+   * error) from a sync that never happened.
+   */
+  error?: string;
 }
 
 /** Subset of ExtractionOrchestrator the indexing drivers operate on. */

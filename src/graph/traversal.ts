@@ -111,25 +111,22 @@ export class GraphTraverser {
       return null;
     }
 
-    // BFS to find shortest path
-    const visited = new Set<string>();
-    const queue: Array<{ nodeId: string; path: Array<{ node: Node; edge: Edge | null }> }> = [
-      { nodeId: fromId, path: [{ node: fromNode, edge: null }] },
-    ];
+    // BFS to find shortest path. Track predecessors (O(V) memory) and
+    // reconstruct at the end, instead of copying the whole path into every
+    // queue entry (which was O(V·L)).
+    const visited = new Set<string>([fromId]);
+    const predecessor = new Map<string, { prevId: string; edge: Edge }>();
+    const queue: string[] = [fromId];
+    let found = false;
 
     while (queue.length > 0) {
-      const { nodeId, path } = queue.shift()!;
+      const nodeId = queue.shift()!;
 
       if (nodeId === toId) {
-        return path;
+        found = true;
+        break;
       }
 
-      if (visited.has(nodeId)) {
-        continue;
-      }
-      visited.add(nodeId);
-
-      // Get outgoing edges
       const outgoingEdges = this.queries.getOutgoingEdges(
         nodeId,
         edgeKinds.length > 0 ? edgeKinds : undefined
@@ -137,18 +134,33 @@ export class GraphTraverser {
 
       for (const edge of outgoingEdges) {
         if (!visited.has(edge.target)) {
-          const nextNode = this.queries.getNodeById(edge.target);
-          if (nextNode) {
-            queue.push({
-              nodeId: edge.target,
-              path: [...path, { node: nextNode, edge }],
-            });
-          }
+          visited.add(edge.target);
+          predecessor.set(edge.target, { prevId: nodeId, edge });
+          queue.push(edge.target);
         }
       }
     }
 
-    return null; // No path found
+    if (!found) {
+      return null; // No path found
+    }
+
+    // Reconstruct the path from toId back to fromId via the predecessor map.
+    const reversed: Array<{ node: Node; edge: Edge | null }> = [];
+    let currentId: string | undefined = toId;
+    let currentEdge: Edge | null = null;
+    while (currentId !== undefined) {
+      const node = currentId === fromId ? fromNode : this.queries.getNodeById(currentId);
+      if (!node) return null;
+      reversed.push({ node, edge: currentEdge });
+      if (currentId === fromId) break;
+      const pred = predecessor.get(currentId);
+      if (!pred) return null;
+      currentEdge = pred.edge;
+      currentId = pred.prevId;
+    }
+
+    return reversed.reverse();
   }
 
   /**

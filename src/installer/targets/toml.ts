@@ -40,9 +40,19 @@ export function serializeTomlTableBody(values: Record<string, string | string[]>
 }
 
 function quoteString(s: string): string {
-  // TOML basic strings: backslash and double-quote escapes; control
-  // chars not expected in our payload (paths/args).
-  return '"' + s.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+  // TOML basic strings: escape backslash, double-quote, and control chars.
+  // Payloads today are paths/args, but escaping control chars defensively keeps
+  // the output valid TOML even if an unexpected value slips through.
+  const escaped = s
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\t/g, '\\t')
+    // Remaining C0 control chars → \uXXXX.
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, ch =>
+      '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0'));
+  return '"' + escaped + '"';
 }
 
 /**
@@ -125,11 +135,14 @@ export function removeTomlTable(
  * appears at the start of a line. Returns -1 if not found.
  */
 function findHeaderIndex(content: string, headerLine: string): number {
-  // Search BOL or right after a newline.
-  if (content.startsWith(headerLine)) return 0;
-  const needle = '\n' + headerLine;
-  const idx = content.indexOf(needle);
-  return idx === -1 ? -1 : idx + 1;
+  // Match at BOL or right after a newline, tolerating leading whitespace — TOML
+  // permits indentation before a table header, so an indented existing block
+  // must still be found (otherwise we'd append a duplicate table).
+  const escaped = headerLine.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const bol = new RegExp('^[ \\t]*' + escaped, 'm');
+  const m = bol.exec(content);
+  if (!m || m.index === undefined) return -1;
+  return m.index;
 }
 
 /**

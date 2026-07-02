@@ -119,11 +119,13 @@ describe('Installer Config Writer', () => {
       expect(final).toContain('<!-- CODEGRAPH_END -->');
     });
 
-    it('should replace unmarked section without subsections', () => {
+    it('should replace an unmarked legacy CodeGraph section (recognizable by tool refs)', () => {
       const claudeDir = path.join(tempDir, '.claude');
       fs.mkdirSync(claudeDir, { recursive: true });
       const claudeMdPath = path.join(claudeDir, 'CLAUDE.md');
-      // Note: regex needs \n before ## CodeGraph, so prefix with another section
+      // Note: regex needs \n before ## CodeGraph, so prefix with another section.
+      // The legacy section references the MCP tools, so it is recognized as a
+      // prior install and migrated in place.
       fs.writeFileSync(claudeMdPath, [
         '## Intro',
         '',
@@ -131,7 +133,7 @@ describe('Installer Config Writer', () => {
         '',
         '## CodeGraph',
         '',
-        'Old simple content',
+        'Use codegraph_search to find symbols.',
         '',
         '## Next Section',
         '',
@@ -145,7 +147,31 @@ describe('Installer Config Writer', () => {
       expect(final).toContain('<!-- CODEGRAPH_START -->');
       expect(final).toContain('## Next Section');
       expect(final).toContain('Must be preserved');
-      expect(final).not.toContain('Old simple content');
+      expect(final).not.toContain('Use codegraph_search to find symbols.');
+    });
+
+    it('should NOT clobber a user-written ## CodeGraph section that lacks tool refs', () => {
+      const claudeDir = path.join(tempDir, '.claude');
+      fs.mkdirSync(claudeDir, { recursive: true });
+      const claudeMdPath = path.join(claudeDir, 'CLAUDE.md');
+      // A user's own prose section happening to be titled "## CodeGraph" must be
+      // preserved; the installer appends its own marked section instead.
+      fs.writeFileSync(claudeMdPath, [
+        '## Intro',
+        '',
+        'Preamble',
+        '',
+        '## CodeGraph',
+        '',
+        'My own notes about the code graph diagram in our design doc.',
+        '',
+      ].join('\n'));
+
+      writeClaudeMd('local');
+
+      const final = fs.readFileSync(claudeMdPath, 'utf-8');
+      expect(final).toContain('<!-- CODEGRAPH_START -->');
+      expect(final).toContain('My own notes about the code graph diagram in our design doc.');
     });
   });
 });

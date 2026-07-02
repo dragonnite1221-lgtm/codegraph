@@ -155,6 +155,15 @@ export class QueryBuilder {
     return runGetAllMetadata({ runStatement: (sql, fn) => this.withStatement(sql, fn) });
   }
 
+  /**
+   * Run `fn` inside a single database transaction. Used to batch a file's
+   * delete + node/edge/ref inserts + file upsert into one commit (M6), which
+   * matters most on the WASM fallback where every commit fsyncs.
+   */
+  transaction<T>(fn: () => T): T {
+    return this.db.transaction(fn)();
+  }
+
   /** Clear all data from the database */
   clear(): void {
     this.nodeCache.clear();

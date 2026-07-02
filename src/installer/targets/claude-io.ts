@@ -105,12 +105,19 @@ export function writeInstructionsEntry(loc: Location): WriteResult['files'][numb
         const sectionEnd = nextHeader && nextHeader.index !== undefined
           ? sectionStart + 1 + nextHeader.index
           : content.length;
-        const merged =
-          content.substring(0, sectionStart) +
-          '\n' + INSTRUCTIONS_TEMPLATE +
-          content.substring(sectionEnd);
-        atomicWriteFileSync(file, merged);
-        return { path: file, action: 'updated' };
+        // Only migrate a section that is recognizably a prior CodeGraph install
+        // (it references the MCP tools, e.g. `codegraph_search`). A user's own
+        // hand-written "## CodeGraph" prose must not be silently overwritten —
+        // fall through to append a fresh marked section instead.
+        const sectionBody = content.substring(sectionStart, sectionEnd);
+        if (/codegraph_[a-z]/.test(sectionBody)) {
+          const merged =
+            content.substring(0, sectionStart) +
+            '\n' + INSTRUCTIONS_TEMPLATE +
+            content.substring(sectionEnd);
+          atomicWriteFileSync(file, merged);
+          return { path: file, action: 'updated' };
+        }
       }
     }
   }

@@ -54,6 +54,9 @@ function makeQueries(existingFile: FileRecord | null = null) {
     upsertFile(file: FileRecord) {
       this.files.push(file);
     },
+    transaction<T>(fn: () => T): T {
+      return fn();
+    },
   };
 }
 
