@@ -42,11 +42,61 @@ export function getCodeGraphPermissions(): string[] {
 }
 
 /**
- * Read a JSON file, returning `{}` when missing or unparseable.
+ * Raised when a config file exists but cannot be parsed as JSON.
  *
- * Unparseable files are backed up to `<path>.backup` BEFORE we return
- * `{}` — so an idempotent re-run never silently deletes a user's
- * existing config that happened to break JSON parse temporarily.
+ * Callers that are about to *rewrite* the file must let this propagate
+ * rather than proceed — writing on top of a failed parse would replace
+ * the user's real config (all their other MCP servers, settings) with
+ * just our codegraph entry. See `readJsonFileForUpdate`.
+ */
+export class JsonParseError extends Error {
+  constructor(
+    readonly filePath: string,
+    readonly backupPath: string | null,
+    readonly cause: unknown,
+  ) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    const where = backupPath
+      ? ` A backup of the original was saved to ${path.basename(backupPath)}.`
+      : '';
+    super(
+      `Refusing to overwrite ${path.basename(filePath)}: it exists but is not valid JSON (${detail}). ` +
+      `Fix or remove the file, then re-run.${where}`,
+    );
+    this.name = 'JsonParseError';
+  }
+}
+
+/**
+ * Copy an unparseable file to a timestamped, non-overwriting backup.
+ *
+ * The name includes a timestamp + pid so a second run never clobbers
+ * the first backup (the original bug: a fixed `<path>.backup` meant a
+ * second run overwrote the only good copy with already-corrupt data).
+ * Returns the backup path, or null if the backup itself failed.
+ */
+function backupUnparseableFile(filePath: string): string | null {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupPath = `${filePath}.corrupt-${stamp}.${process.pid}.bak`;
+  try {
+    if (!fs.existsSync(backupPath)) {
+      fs.copyFileSync(filePath, backupPath);
+    }
+    return backupPath;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read a JSON file for read-only inspection (detect / has* checks).
+ *
+ * Returns `{}` when the file is missing OR unparseable. Safe precisely
+ * because callers only READ the result — they never write it back, so
+ * the `{}` fallback here cannot destroy an existing config. Side-effect
+ * free (no backup, no write) so repeated detection never litters the
+ * directory. Paths that mutate-and-write must use
+ * `readJsonFileForUpdate` instead.
  */
 export function readJsonFile(filePath: string): Record<string, any> {
   if (!fs.existsSync(filePath)) {
@@ -57,11 +107,28 @@ export function readJsonFile(filePath: string): Record<string, any> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`  Warning: Could not parse ${path.basename(filePath)}: ${msg}`);
-    console.warn(`  A backup will be created before overwriting.`);
-    try {
-      fs.copyFileSync(filePath, filePath + '.backup');
-    } catch { /* ignore backup failure */ }
     return {};
+  }
+}
+
+/**
+ * Read a JSON file that is about to be merged and written back.
+ *
+ * Returns `{}` for a genuinely missing file (first install). But when
+ * the file EXISTS and fails to parse, it makes a timestamped backup and
+ * throws `JsonParseError` — the caller must NOT continue, because the
+ * next step would be to `writeJsonFile` our entry over the top and wipe
+ * the user's real config. Missing != corrupt: only the latter aborts.
+ */
+export function readJsonFileForUpdate(filePath: string): Record<string, any> {
+  if (!fs.existsSync(filePath)) {
+    return {};
+  }
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+  } catch (err) {
+    const backupPath = backupUnparseableFile(filePath);
+    throw new JsonParseError(filePath, backupPath, err);
   }
 }
 

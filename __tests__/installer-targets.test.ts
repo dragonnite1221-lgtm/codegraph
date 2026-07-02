@@ -97,6 +97,35 @@ describe('Installer targets — contract', () => {
             expect(target.detect(location).alreadyConfigured).toBe(false);
           });
 
+          it('install refuses to overwrite a corrupt JSON config; preserves it + backs it up', () => {
+            // Regression: a parse failure used to fall back to `{}` and
+            // then write our entry on top, wiping the user's real config
+            // (all their other MCP servers). Now the write must abort and
+            // the original bytes must survive, with a timestamped backup.
+            const paths = target.describePaths(location);
+            // Strict .json only — opencode's .jsonc goes through the
+            // jsonc-parser path, Codex through TOML; both are separate.
+            const jsonPath = paths.find((p) => /\.json$/.test(p));
+            if (!jsonPath) return;
+
+            const corrupt = '{ "mcpServers": { "other": { "command": "x" } '; // missing closing braces
+            fs.mkdirSync(path.dirname(jsonPath), { recursive: true });
+            fs.writeFileSync(jsonPath, corrupt);
+
+            expect(() => target.install(location, { autoAllow: true })).toThrow(/not valid JSON/);
+
+            // Original file untouched.
+            expect(fs.readFileSync(jsonPath, 'utf-8')).toBe(corrupt);
+            // A timestamped backup of the corrupt original was made.
+            const dir = path.dirname(jsonPath);
+            const base = path.basename(jsonPath);
+            const backups = fs.readdirSync(dir).filter(
+              (f) => f.startsWith(base + '.corrupt-') && f.endsWith('.bak'),
+            );
+            expect(backups.length).toBeGreaterThan(0);
+            expect(fs.readFileSync(path.join(dir, backups[0]!), 'utf-8')).toBe(corrupt);
+          });
+
           it('printConfig returns non-empty output without writing anything', () => {
             const before = listAllFiles(tmpHome).concat(listAllFiles(tmpCwd));
             const out = target.printConfig(location);

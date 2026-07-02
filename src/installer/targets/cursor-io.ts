@@ -11,7 +11,7 @@ import {
   atomicWriteFileSync,
   getMcpServerConfig,
   jsonDeepEqual,
-  readJsonFile,
+  readJsonFileForUpdate,
   replaceOrAppendMarkedSection,
   writeJsonFile,
 } from './shared';
@@ -65,7 +65,7 @@ export function buildCursorMcpConfig(loc: Location): { type: string; command: st
 
 export function writeMcpEntry(loc: Location): WriteResult['files'][number] {
   const file = mcpJsonPath(loc);
-  const existing = readJsonFile(file);
+  const existing = readJsonFileForUpdate(file);
   const before = existing.mcpServers?.codegraph;
   const after = buildCursorMcpConfig(loc);
 

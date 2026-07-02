@@ -18,7 +18,14 @@ export class FileLock {
   private lockPath: string;
   private held = false;
 
-  /** Locks older than this are considered stale regardless of PID status */
+  /**
+   * Fallback staleness window, used ONLY when the lock file's PID is
+   * unreadable (corrupt/legacy lock). When the PID is readable we trust
+   * process liveness instead of any timeout — indexing legitimately
+   * holds the lock longer than any fixed window (minutes on the wasm
+   * backend), and a time-based steal there would create two concurrent
+   * writers.
+   */
   private static readonly STALE_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
 
   constructor(lockPath: string) {
@@ -34,18 +41,30 @@ export class FileLock {
       try {
         const content = fs.readFileSync(this.lockPath, 'utf-8').trim();
         const pid = parseInt(content, 10);
-        const stat = fs.statSync(this.lockPath);
-        const lockAge = Date.now() - stat.mtimeMs;
 
-        // Treat locks older than the timeout as stale, regardless of PID
-        if (lockAge < FileLock.STALE_TIMEOUT_MS && !isNaN(pid) && this.isProcessAlive(pid)) {
-          throw new Error(
-            `CodeGraph database is locked by another process (PID ${pid}). ` +
-            `If this is stale, run 'codegraph unlock' or delete ${this.lockPath}`
-          );
+        if (!isNaN(pid)) {
+          // Owner PID is known: liveness decides, not age. A live owner
+          // holds the lock no matter how long indexing has run; only a
+          // dead owner's lock is stale and safe to reclaim.
+          if (this.isProcessAlive(pid)) {
+            throw new Error(
+              `CodeGraph database is locked by another process (PID ${pid}). ` +
+              `If this is stale, run 'codegraph unlock' or delete ${this.lockPath}`
+            );
+          }
+        } else {
+          // PID unreadable (corrupt/legacy lock): fall back to age.
+          const stat = fs.statSync(this.lockPath);
+          const lockAge = Date.now() - stat.mtimeMs;
+          if (lockAge < FileLock.STALE_TIMEOUT_MS) {
+            throw new Error(
+              'CodeGraph database is locked by another process. ' +
+              `If this is stale, run 'codegraph unlock' or delete ${this.lockPath}`
+            );
+          }
         }
 
-        // Stale lock (dead process or timed out) - remove it
+        // Dead owner, or timed-out unreadable lock - remove it
         fs.unlinkSync(this.lockPath);
       } catch (err) {
         if (err instanceof Error && err.message.includes('locked by another')) {

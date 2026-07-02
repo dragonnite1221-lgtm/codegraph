@@ -13,7 +13,7 @@ import {
   getCodeGraphPermissions,
   getMcpServerConfig,
   jsonDeepEqual,
-  readJsonFile,
+  readJsonFileForUpdate,
   replaceOrAppendMarkedSection,
   writeJsonFile,
 } from './shared';
@@ -42,7 +42,7 @@ export function instructionsPath(loc: Location): string {
 
 export function writeMcpEntry(loc: Location): WriteResult['files'][number] {
   const file = mcpJsonPath(loc);
-  const existing = readJsonFile(file);
+  const existing = readJsonFileForUpdate(file);
   const before = existing.mcpServers?.codegraph;
   const after = getMcpServerConfig();
 
@@ -65,7 +65,7 @@ export function writeMcpEntry(loc: Location): WriteResult['files'][number] {
 
 export function writePermissionsEntry(loc: Location): WriteResult['files'][number] {
   const file = settingsJsonPath(loc);
-  const settings = readJsonFile(file);
+  const settings = readJsonFileForUpdate(file);
   const created = !fs.existsSync(file);
 
   if (!settings.permissions) settings.permissions = {};

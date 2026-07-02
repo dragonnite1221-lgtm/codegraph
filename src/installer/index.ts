@@ -156,7 +156,17 @@ export async function runInstallerWithOptions(opts: RunInstallerOptions): Promis
       );
       continue;
     }
-    const result = target.install(location, { autoAllow });
+    let result;
+    try {
+      result = target.install(location, { autoAllow });
+    } catch (err) {
+      // A corrupt existing config (JsonParseError) or any other write
+      // failure for one target must not abort the whole install run —
+      // report it and keep configuring the remaining targets.
+      const msg = err instanceof Error ? err.message : String(err);
+      clack.log.error(`${target.displayName}: ${msg}`);
+      continue;
+    }
     for (const file of result.files) {
       const verb = file.action === 'unchanged'
         ? 'Unchanged'
