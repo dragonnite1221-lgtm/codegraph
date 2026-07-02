@@ -99,9 +99,14 @@ export class ParseWorkerPool {
     this.parseWorker = worker;
     this.attachWorkerHandlers(worker);
 
-    // Load grammars in the new worker
-    await loadGrammarsInWorker(worker, this.opts.neededLanguages);
-
+    // On grammar-load failure, tear the worker down so ensureWorker() respawns.
+    try {
+      await loadGrammarsInWorker(worker, this.opts.neededLanguages);
+    } catch (err) {
+      if (this.parseWorker === worker) this.parseWorker = null;
+      worker.terminate().catch(() => {});
+      throw err;
+    }
     return worker;
   }
 

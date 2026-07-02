@@ -4,16 +4,28 @@
  * McpServerCore. Split out of index.ts to stay within the file-size gate.
  */
 
+import * as fs from 'fs';
 import * as path from 'path';
 import { JsonRpcRequest, ErrorCodes } from './transport';
 import { tools } from './tools';
 import { SERVER_INSTRUCTIONS } from './server-instructions';
 import { type McpServerCore, tryInitializeDefault, retryInitIfNeeded } from './mcp-lifecycle';
 
+/** Read the package version from package.json; fall back if unreadable. */
+function readPackageVersion(): string {
+  try {
+    const pkgPath = path.join(__dirname, '..', '..', 'package.json');
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    return typeof pkg.version === 'string' ? pkg.version : '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
 /** MCP Server Info */
 const SERVER_INFO = {
   name: 'codegraph',
-  version: '0.1.0',
+  version: readPackageVersion(),
 };
 
 /** MCP Protocol Version */

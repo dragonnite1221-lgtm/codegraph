@@ -4,7 +4,7 @@
  * class. Split out of tools.ts to stay within the file-size gate.
  */
 
-import type { NodeKind } from '../types';
+import { NODE_KINDS, type NodeKind } from '../types';
 import type { ToolResult } from './tool-types';
 import {
   type ToolHandlerCtx,
@@ -30,7 +30,10 @@ export async function handleSearch(ctx: ToolHandlerCtx, args: Record<string, unk
   if (typeof query !== 'string') return query;
 
   const cg = ctx.getCodeGraph(args.projectPath as string | undefined);
-  const kind = args.kind as NodeKind | undefined;
+  const kind =
+    typeof args.kind === 'string' && (NODE_KINDS as readonly string[]).includes(args.kind)
+      ? (args.kind as NodeKind)
+      : undefined;
   const limit = boundedNumber(args.limit, 10, 1, 100);
 
   return ctx.textResult(ctx.truncateOutput(buildSearchOutput(cg, query, { limit, kind })));
