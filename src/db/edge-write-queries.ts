@@ -50,11 +50,16 @@ export class EdgeQueries {
 
   /** Insert multiple edges in a transaction */
   insertEdges(edges: Edge[]): void {
-    this.db.transaction(() => {
+    const body = () => {
       for (const edge of edges) {
         this.insertEdge(edge);
       }
-    })();
+    };
+    if (this.db.inTransaction) {
+      body();
+    } else {
+      this.db.transaction(body)();
+    }
   }
 
   /** Delete all edges from a source node */

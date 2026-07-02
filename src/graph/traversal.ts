@@ -148,15 +148,14 @@ export class GraphTraverser {
     // Reconstruct the path from toId back to fromId via the predecessor map.
     const reversed: Array<{ node: Node; edge: Edge | null }> = [];
     let currentId: string | undefined = toId;
-    let currentEdge: Edge | null = null;
     while (currentId !== undefined) {
       const node = currentId === fromId ? fromNode : this.queries.getNodeById(currentId);
       if (!node) return null;
-      reversed.push({ node, edge: currentEdge });
+      const pred: { prevId: string; edge: Edge } | undefined =
+        currentId === fromId ? undefined : predecessor.get(currentId);
+      reversed.push({ node, edge: pred ? pred.edge : null });
       if (currentId === fromId) break;
-      const pred = predecessor.get(currentId);
       if (!pred) return null;
-      currentEdge = pred.edge;
       currentId = pred.prevId;
     }
 

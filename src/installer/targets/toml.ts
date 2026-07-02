@@ -151,17 +151,18 @@ function findHeaderIndex(content: string, headerLine: string): number {
  * return content length when none.
  */
 function findNextTableHeader(content: string, from: number): number {
-  // Look for "\n[" but skip "\n[[" (array of tables).
+  // Find the start of the next table header line ([...]), tolerating leading
+  // whitespace (TOML permits indentation) so an indented sibling table still
+  // bounds the current block; skip array-of-tables ([[...]]).
   let i = from;
   while (i < content.length) {
-    const nlIdx = content.indexOf('\n[', i);
+    const nlIdx = content.indexOf('\n', i);
     if (nlIdx === -1) return content.length;
-    if (content[nlIdx + 2] === '[') {
-      // [[...]] — keep searching past it.
-      i = nlIdx + 2;
-      continue;
-    }
-    return nlIdx + 1;
+    const lineStart = nlIdx + 1;
+    let j = lineStart;
+    while (content[j] === ' ' || content[j] === '\t') j++;
+    if (content[j] === '[' && content[j + 1] !== '[') return lineStart;
+    i = lineStart;
   }
   return content.length;
 }
