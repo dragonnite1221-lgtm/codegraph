@@ -41,8 +41,8 @@ export class ReferenceResolver {
   queries: QueryBuilder;
   private context: ResolutionContext;
   private frameworks: FrameworkResolver[] = [];
-  private nodeCache: Map<string, Node[]> = new Map(); // per-file node cache (bounded)
-  private fileCache: Map<string, string | null> = new Map(); // per-file content cache (bounded)
+  private nodeCache: Map<string, Node[]> = new Map(); // per-file node cache (cleared per resolve pass)
+  private fileCache: Map<string, string | null> = new Map(); // per-file content cache (FIFO-bounded, see resolution-context)
   private importMappingCache: Map<string, ImportMapping[]> = new Map();
   private reExportCache: Map<string, ReExport[]> = new Map();
   private nameCache: Map<string, Node[]> = new Map(); // name → nodes cache

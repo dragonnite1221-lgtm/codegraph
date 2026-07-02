@@ -3,7 +3,7 @@ import type { Command } from 'commander';
 import { isInitialized } from '../directory';
 
 import { globToRegex } from './affected-tests';
-import { error, info } from './cli-output';
+import { error, info, parseIntOption } from './cli-output';
 import { renderFiles } from './files-output';
 
 type CommandDeps = {
@@ -80,7 +80,7 @@ export function registerFilesCommand(program: Command, deps: CommandDeps): void 
         renderFiles(files, {
           includeMetadata: options.metadata !== false,
           format: options.format || 'tree',
-          maxDepth: options.maxDepth ? parseInt(options.maxDepth, 10) : undefined,
+          maxDepth: options.maxDepth ? parseIntOption(options.maxDepth, 5) : undefined,
         });
 
         console.log();

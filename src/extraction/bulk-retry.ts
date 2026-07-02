@@ -130,10 +130,11 @@ export async function retryWasmMemoryFailures(args: RetryArgs): Promise<void> {
           }
 
           // Strip lines that are entirely comments (preserving line numbers
-          // by replacing with empty lines so node positions stay correct)
+          // by replacing with empty lines so node positions stay correct).
+          // Covers `//` (C-family) and `#` (Python/Ruby/shell) line comments.
           const stripped = fullContent
             .split('\n')
-            .map(line => /^\s*\/\//.test(line) ? '' : line)
+            .map(line => /^\s*(\/\/|#)/.test(line) ? '' : line)
             .join('\n');
 
           let result: ExtractionResult;
