@@ -66,6 +66,29 @@ describe('Graph Queries', () => {
 
       expect(path).toBeNull();
     });
+
+    it('aligns each node with its incoming edge (start edge is null)', () => {
+      // Regression: the reconstructed path must attach to each node the edge
+      // that leads INTO it, with the start node carrying null — not shifted.
+      const functions = cg.getNodesByKind('function');
+      let checked = 0;
+      for (const from of functions) {
+        for (const to of functions) {
+          if (from.id === to.id) continue;
+          const path = cg.findPath(from.id, to.id);
+          if (!path || path.length < 2) continue;
+          expect(path[0].edge).toBeNull();
+          for (let i = 1; i < path.length; i++) {
+            const e = path[i].edge;
+            expect(e).not.toBeNull();
+            expect(e!.source).toBe(path[i - 1].node.id);
+            expect(e!.target).toBe(path[i].node.id);
+          }
+          checked++;
+          if (checked >= 1) return;
+        }
+      }
+    });
   });
 
   describe('getAncestors() and getChildren()', () => {

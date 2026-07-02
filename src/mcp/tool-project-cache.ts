@@ -6,6 +6,7 @@
  */
 
 import CodeGraph, { findNearestCodeGraphRoot } from '../index';
+import { validateProjectPath } from '../path-security';
 import { isAbsolute, relative, resolve } from 'path';
 
 const MAX_PROJECT_CACHE_SIZE = 32;
@@ -57,6 +58,13 @@ export class ProjectCache {
         throw new Error('CodeGraph not initialized for this project. Run \'codegraph init\' first.');
       }
       return this.cg;
+    }
+
+    // Guard the MCP entry point: reject sensitive system/home directories and
+    // non-existent paths before walking up to find a .codegraph/ root.
+    const validationError = validateProjectPath(projectPath);
+    if (validationError) {
+      throw new Error(validationError);
     }
 
     const requestedPath = resolve(projectPath);

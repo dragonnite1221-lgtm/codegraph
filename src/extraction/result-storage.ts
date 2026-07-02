@@ -10,6 +10,8 @@ interface ExtractionStorageQueries {
   insertEdges(edges: ExtractionResult['edges']): void;
   insertUnresolvedRefsBatch(refs: ExtractionResult['unresolvedReferences']): void;
   upsertFile(file: FileRecord): void;
+  /** Run the delete + inserts + upsert as a single committed transaction. */
+  transaction<T>(fn: () => T): T;
 }
 
 /**
@@ -30,49 +32,53 @@ export function storeExtractionResult(
     return;
   }
 
-  if (existingFile) {
-    queries.deleteFile(filePath);
-  }
-
   const validNodes = result.nodes.filter(
     (node) => node.id && node.kind && node.name && node.filePath && node.language
   );
-
-  if (validNodes.length > 0) {
-    queries.insertNodes(validNodes);
-  }
-
   const insertedIds = new Set(validNodes.map((node) => node.id));
-  if (result.edges.length > 0) {
-    const validEdges = result.edges.filter(
-      (edge) => insertedIds.has(edge.source) && insertedIds.has(edge.target)
-    );
+
+  const validEdges =
+    result.edges.length > 0
+      ? result.edges.filter(
+          (edge) => insertedIds.has(edge.source) && insertedIds.has(edge.target)
+        )
+      : [];
+
+  const refsWithContext =
+    result.unresolvedReferences.length > 0
+      ? result.unresolvedReferences
+          .filter((ref) => insertedIds.has(ref.fromNodeId))
+          .map((ref) => ({
+            ...ref,
+            filePath: ref.filePath ?? filePath,
+            language: ref.language ?? language,
+          }))
+      : [];
+
+  // Batch delete + inserts + upsert into a single transaction (one commit per
+  // file instead of 3-4), which the WASM fallback fsyncs on each commit.
+  queries.transaction(() => {
+    if (existingFile) {
+      queries.deleteFile(filePath);
+    }
+    if (validNodes.length > 0) {
+      queries.insertNodes(validNodes);
+    }
     if (validEdges.length > 0) {
       queries.insertEdges(validEdges);
     }
-  }
-
-  if (result.unresolvedReferences.length > 0) {
-    const refsWithContext = result.unresolvedReferences
-      .filter((ref) => insertedIds.has(ref.fromNodeId))
-      .map((ref) => ({
-        ...ref,
-        filePath: ref.filePath ?? filePath,
-        language: ref.language ?? language,
-      }));
     if (refsWithContext.length > 0) {
       queries.insertUnresolvedRefsBatch(refsWithContext);
     }
-  }
-
-  queries.upsertFile({
-    path: filePath,
-    contentHash,
-    language,
-    size: stats.size,
-    modifiedAt: stats.mtimeMs,
-    indexedAt: Date.now(),
-    nodeCount: result.nodes.length,
-    errors: result.errors.length > 0 ? result.errors : undefined,
+    queries.upsertFile({
+      path: filePath,
+      contentHash,
+      language,
+      size: stats.size,
+      modifiedAt: stats.mtimeMs,
+      indexedAt: Date.now(),
+      nodeCount: result.nodes.length,
+      errors: result.errors.length > 0 ? result.errors : undefined,
+    });
   });
 }

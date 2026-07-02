@@ -2,7 +2,7 @@ import type { Command } from 'commander';
 
 import { isInitialized } from '../directory';
 
-import { error } from './cli-output';
+import { error, parseIntOption } from './cli-output';
 
 type CommandDeps = {
   resolveProjectPath(pathArg?: string): string;
@@ -37,8 +37,8 @@ export function registerContextCommand(program: Command, deps: CommandDeps): voi
         const cg = await CodeGraph.open(projectPath);
 
         const context = await cg.buildContext(task, {
-          maxNodes: parseInt(options.maxNodes || '50', 10),
-          maxCodeBlocks: parseInt(options.maxCode || '10', 10),
+          maxNodes: parseIntOption(options.maxNodes, 50),
+          maxCodeBlocks: parseIntOption(options.maxCode, 10),
           includeCode: options.code !== false,
           format: options.format as 'markdown' | 'json',
         });

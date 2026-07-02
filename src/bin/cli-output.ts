@@ -108,5 +108,15 @@ export function warn(message: string): void {
   console.log(chalk.yellow(getGlyphs().warn) + ' ' + message);
 }
 
+/**
+ * Parse a CLI numeric option, falling back to a default when the value is
+ * missing or not a finite integer (e.g. `--limit abc`). Prevents NaN from
+ * silently propagating into the query layer.
+ */
+export function parseIntOption(value: string | undefined, fallback: number): number {
+  if (value === undefined) return fallback;
+  const n = parseInt(value, 10);
+  return Number.isFinite(n) ? n : fallback;
+}
 
 export { printIndexResult } from './cli-output-report';

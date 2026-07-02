@@ -61,13 +61,18 @@ export class FileQueries {
 
   /** Delete a file record and its nodes */
   deleteFile(filePath: string): void {
-    this.db.transaction(() => {
+    const body = () => {
       this.deleteNodesByFile(filePath);
       if (!this.stmts.deleteFile) {
         this.stmts.deleteFile = this.db.prepare('DELETE FROM files WHERE path = ?');
       }
       this.stmts.deleteFile.run(filePath);
-    })();
+    };
+    if (this.db.inTransaction) {
+      body();
+    } else {
+      this.db.transaction(body)();
+    }
   }
 
   /** Get a file record by path */

@@ -7,6 +7,11 @@ import type { SearchOptions, SearchResult } from '../types';
 import { type NodeRow, rowToNode } from './row-mappers';
 import type { SearchQueryContext } from './search-internals';
 
+/** Escape LIKE wildcards so a query containing %/_ matches them literally. */
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, char => `\\${char}`);
+}
+
 /**
  * FTS5 search with prefix matching
  */
@@ -76,9 +81,15 @@ export function searchNodesFTS(
       node: rowToNode(row),
       score: Math.abs(row.score), // bm25 returns negative scores
     }));
-  } catch {
-    // FTS query failed, return empty
-    return [];
+  } catch (err) {
+    // Only swallow FTS *query-syntax* errors (malformed MATCH → treat as no
+    // results). Re-throw structural failures (DB corruption, locks, disk I/O)
+    // so they surface instead of masquerading as an empty result set.
+    const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
+    const isQuerySyntax =
+      msg.includes('fts5') || msg.includes('syntax error') || msg.includes('malformed match');
+    if (isQuerySyntax) return [];
+    throw err;
   }
 }
 
@@ -97,23 +108,25 @@ export function searchNodesLike(
     SELECT nodes.*,
       CASE
         WHEN name = ? THEN 1.0
-        WHEN name LIKE ? THEN 0.9
-        WHEN name LIKE ? THEN 0.8
-        WHEN qualified_name LIKE ? THEN 0.7
+        WHEN name LIKE ? ESCAPE '\\' THEN 0.9
+        WHEN name LIKE ? ESCAPE '\\' THEN 0.8
+        WHEN qualified_name LIKE ? ESCAPE '\\' THEN 0.7
         ELSE 0.5
       END as score
     FROM nodes
     WHERE (
-      name LIKE ? OR
-      qualified_name LIKE ? OR
-      name LIKE ?
+      name LIKE ? ESCAPE '\\' OR
+      qualified_name LIKE ? ESCAPE '\\' OR
+      name LIKE ? ESCAPE '\\'
     )
   `;
 
-  // Pattern variants for better matching
+  // Pattern variants for better matching. Escape LIKE wildcards in the query so
+  // a search term containing %/_ is matched literally rather than as a wildcard.
+  const escaped = escapeLike(query);
   const exactMatch = query;
-  const startsWith = `${query}%`;
-  const contains = `%${query}%`;
+  const startsWith = `${escaped}%`;
+  const contains = `%${escaped}%`;
 
   const params: (string | number)[] = [
     exactMatch, // Exact match score

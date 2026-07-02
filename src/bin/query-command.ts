@@ -3,7 +3,7 @@ import type { Command } from 'commander';
 import type { NodeKind } from '../types';
 import { isInitialized } from '../directory';
 
-import { error, info } from './cli-output';
+import { error, info, parseIntOption } from './cli-output';
 import { buildQueryResultLines, printQueryResultLines } from './query-output';
 
 type CommandDeps = {
@@ -31,7 +31,7 @@ export function registerQueryCommand(program: Command, deps: CommandDeps): void 
         const { default: CodeGraph } = await deps.loadCodeGraph();
         const cg = await CodeGraph.open(projectPath);
 
-        const limit = parseInt(options.limit || '10', 10);
+        const limit = parseIntOption(options.limit, 10);
         const results = cg.searchNodes(search, {
           limit,
           kinds: options.kind ? [options.kind as NodeKind] : undefined,

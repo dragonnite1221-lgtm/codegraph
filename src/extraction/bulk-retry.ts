@@ -84,7 +84,12 @@ export async function retryWasmMemoryFailures(args: RetryArgs): Promise<void> {
 
         if (shouldStoreParseResult(result)) {
           const language = detectLanguage(filePath, content);
-          const stats = await fsp.stat(fullPath);
+          let stats: fs.Stats;
+          try {
+            stats = await fsp.stat(fullPath);
+          } catch {
+            continue; // file vanished between read and stat — skip, don't abort the pool
+          }
           store(filePath, content, language, stats, result);
 
           const idx = errors.indexOf(errEntry);
@@ -125,10 +130,11 @@ export async function retryWasmMemoryFailures(args: RetryArgs): Promise<void> {
           }
 
           // Strip lines that are entirely comments (preserving line numbers
-          // by replacing with empty lines so node positions stay correct)
+          // by replacing with empty lines so node positions stay correct).
+          // Covers `//` (C-family) and `#` (Python/Ruby/shell) line comments.
           const stripped = fullContent
             .split('\n')
-            .map(line => /^\s*\/\//.test(line) ? '' : line)
+            .map(line => /^\s*(\/\/|#)/.test(line) ? '' : line)
             .join('\n');
 
           let result: ExtractionResult;
@@ -140,7 +146,12 @@ export async function retryWasmMemoryFailures(args: RetryArgs): Promise<void> {
 
           if (shouldStoreParseResult(result)) {
             const language = detectLanguage(filePath, fullContent);
-            const stats = await fsp.stat(fullPath);
+            let stats: fs.Stats;
+            try {
+              stats = await fsp.stat(fullPath);
+            } catch {
+              continue; // file vanished between read and stat — skip, don't abort the pool
+            }
             store(filePath, fullContent, language, stats, result);
 
             const idx = errors.indexOf(errEntry);

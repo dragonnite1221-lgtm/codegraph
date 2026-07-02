@@ -64,15 +64,22 @@ export async function* readFileInChunks(
   chunkSize: number = 64 * 1024
 ): AsyncGenerator<string, void, undefined> {
   const fs = await import('fs');
+  const { StringDecoder } = await import('string_decoder');
 
   const fd = fs.openSync(filePath, 'r');
   const buffer = Buffer.alloc(chunkSize);
+  // A decoder buffers any trailing bytes of a multibyte UTF-8 character that
+  // straddle a chunk boundary, so no character is split across yielded chunks.
+  const decoder = new StringDecoder('utf-8');
 
   try {
     let bytesRead: number;
     while ((bytesRead = fs.readSync(fd, buffer, 0, chunkSize, null)) > 0) {
-      yield buffer.toString('utf-8', 0, bytesRead);
+      const text = decoder.write(buffer.subarray(0, bytesRead));
+      if (text) yield text;
     }
+    const tail = decoder.end();
+    if (tail) yield tail;
   } finally {
     fs.closeSync(fd);
   }

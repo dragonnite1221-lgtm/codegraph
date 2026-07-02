@@ -78,7 +78,7 @@ export interface IndexingDeps {
       try {
         deps.fileLock.acquire();
       } catch {
-        return { filesChecked: 0, filesAdded: 0, filesModified: 0, filesRemoved: 0, nodesUpdated: 0, durationMs: 0 };
+        return { filesChecked: 0, filesAdded: 0, filesModified: 0, filesRemoved: 0, nodesUpdated: 0, durationMs: 0, error: 'Could not acquire file lock - another process may be indexing' };
       }
       try {
         const result = await deps.orchestrator.sync(options.onProgress);

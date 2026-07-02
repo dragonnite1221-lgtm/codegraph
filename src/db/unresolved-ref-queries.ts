@@ -56,12 +56,16 @@ export class UnresolvedReferenceQueries {
   insertBatch(refs: UnresolvedReference[]): void {
     if (refs.length === 0) return;
 
-    const insert = this.db.transaction(() => {
+    const body = () => {
       for (const ref of refs) {
         this.insert(ref);
       }
-    });
-    insert();
+    };
+    if (this.db.inTransaction) {
+      body();
+    } else {
+      this.db.transaction(body)();
+    }
   }
 
   deleteByNode(nodeId: string): void {

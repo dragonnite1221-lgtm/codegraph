@@ -9,6 +9,11 @@ import {
   type SearchQueryContext,
 } from './search-internals';
 
+/** Escape LIKE wildcards so a substring containing %/_ matches them literally. */
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, char => `\\${char}`);
+}
+
 export function runFindNodesByExactName(
   context: SearchQueryContext,
   names: string[],
@@ -114,17 +119,18 @@ export function runFindNodesByNameSubstring(
 ): SearchResult[] {
   const { kinds, languages, limit = 30, excludePrefix } = options;
 
+  const escaped = escapeLike(substring);
   let sql = `
     SELECT nodes.*, 1.0 as score
     FROM nodes
-    WHERE name LIKE ?
+    WHERE name LIKE ? ESCAPE '\\'
   `;
-  const params: (string | number)[] = [`%${substring}%`];
+  const params: (string | number)[] = [`%${escaped}%`];
 
   // Exclude prefix matches (handled by FTS-based prefix search in Step 2b)
   if (excludePrefix) {
-    sql += ` AND name NOT LIKE ?`;
-    params.push(`${substring}%`);
+    sql += ` AND name NOT LIKE ? ESCAPE '\\'`;
+    params.push(`${escaped}%`);
   }
 
   if (kinds && kinds.length > 0) {

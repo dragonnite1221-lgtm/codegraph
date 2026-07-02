@@ -21,6 +21,8 @@ export interface SqliteDatabase {
   transaction<T>(fn: (...args: any[]) => T): (...args: any[]) => T;
   close(): void;
   readonly open: boolean;
+  /** True while a transaction is active (native: better-sqlite3; wasm: adapter). */
+  readonly inTransaction: boolean;
 }
 
 export type SqliteBackend = 'native' | 'wasm';

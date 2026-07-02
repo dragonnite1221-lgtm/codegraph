@@ -93,6 +93,23 @@ describe('FileWatcher', () => {
       watcher.stop(); // Should not throw
       expect(watcher.isActive()).toBe(false);
     });
+
+    it('reports inactive (not falsely active) after an fs.watch error', () => {
+      // Regression: a terminal fs.watch 'error' left the handle in place,
+      // so isActive() kept returning true while the graph went stale.
+      const syncFn = vi.fn().mockResolvedValue({ filesChanged: 0, durationMs: 0 });
+      const onSyncError = vi.fn();
+      const watcher = new FileWatcher(testDir, baseConfig, syncFn, { onSyncError });
+      expect(watcher.start()).toBe(true);
+      expect(watcher.isActive()).toBe(true);
+
+      const inner = (watcher as any).watcher as import('fs').FSWatcher;
+      inner.emit('error', new Error('ENOSPC: inotify watch limit reached'));
+
+      expect(watcher.isActive()).toBe(false);
+      expect(onSyncError).toHaveBeenCalledTimes(1);
+      watcher.stop(); // still safe to call
+    });
   });
 
   describe('debounced sync', () => {

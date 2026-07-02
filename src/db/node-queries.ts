@@ -69,14 +69,21 @@ export class NodeQueries {
   }
 
   /**
-   * Insert multiple nodes in a transaction
+   * Insert multiple nodes in a transaction. When already inside an outer
+   * transaction (e.g. batched per-file storage), run inline so we don't open a
+   * nested transaction — the WASM adapter has no SAVEPOINT support.
    */
   insertNodes(nodes: Node[]): void {
-    this.db.transaction(() => {
+    const body = () => {
       for (const node of nodes) {
         this.insertNode(node);
       }
-    })();
+    };
+    if (this.db.inTransaction) {
+      body();
+    } else {
+      this.db.transaction(body)();
+    }
   }
 
   /**

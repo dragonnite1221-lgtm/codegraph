@@ -7,6 +7,35 @@ a [GitHub Release](https://github.com/colbymchenry/codegraph/releases) tagged
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Installer: corrupt config files are no longer overwritten.** If
+  `~/.claude.json` (or Cursor's `mcp.json`) existed but failed to parse as
+  JSON — e.g. a stray trailing comma — the installer used to fall back to an
+  empty object and write only its own `codegraph` entry, wiping every other
+  MCP server and setting in the file. The installer now refuses to write over
+  an unparseable config, saves a timestamped backup
+  (`<file>.corrupt-<timestamp>.bak`) instead of a single fixed `.backup` that
+  a second run could overwrite, and reports the error for that agent while
+  still configuring the others. A genuinely missing file is still created
+  normally.
+- **File watcher no longer silently goes dead.** When the OS file watcher hit
+  a terminal error (Linux inotify limit, watched directory removed/remounted),
+  the watch handle was left in place so `codegraph` still reported auto-sync
+  as active while the graph quietly went stale. The watcher now tears down on
+  error, reports itself inactive, and surfaces the error via the sync-error
+  callback so a restart is prompted.
+
+### Changed
+- **Database lock no longer stolen from a live indexer.** A lock older than
+  the 2-minute stale window was reclaimed even when its owning process was
+  still running — so a large index/sync (which routinely exceeds two minutes,
+  especially on the wasm backend) could be overrun by a second writer. The
+  lock now trusts process liveness when the owner PID is known (a live owner
+  keeps the lock regardless of age); the time-based staleness check is only a
+  fallback for a lock file whose PID is unreadable.
+
 ## [0.7.12] - 2026-05-20
 
 ### Added

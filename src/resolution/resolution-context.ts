@@ -21,6 +21,22 @@ import type {
 import { loadProjectAliases, type AliasMap } from './path-aliases';
 import { extractImportMappings, extractReExports } from './import-resolver';
 
+/**
+ * Cap on the per-file content cache. Large codebases would otherwise hold the
+ * full source of every read file in memory for the lifetime of a resolve pass.
+ * FIFO eviction keeps the working set bounded; a re-read after eviction just
+ * hits the filesystem again.
+ */
+const FILE_CACHE_MAX = 2000;
+
+function setBounded(cache: Map<string, string | null>, key: string, value: string | null): void {
+  if (cache.size >= FILE_CACHE_MAX && !cache.has(key)) {
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
+  cache.set(key, value);
+}
+
 export interface ResolutionContextDeps {
   queries: QueryBuilder;
   projectRoot: string;
@@ -94,11 +110,11 @@ export function createResolutionContext(deps: ResolutionContextDeps): Resolution
       const fullPath = path.join(deps.projectRoot, filePath);
       try {
         const content = fs.readFileSync(fullPath, 'utf-8');
-        deps.fileCache.set(filePath, content);
+        setBounded(deps.fileCache, filePath, content);
         return content;
       } catch (error) {
         logDebug('Failed to read file for resolution', { filePath, error: String(error) });
-        deps.fileCache.set(filePath, null);
+        setBounded(deps.fileCache, filePath, null);
         return null;
       }
     },

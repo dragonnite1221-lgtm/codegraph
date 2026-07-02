@@ -18,21 +18,13 @@ import { normalizePath } from '../utils';
  * Options for the file watcher
  */
 export interface WatchOptions {
-  /**
-   * Debounce delay in milliseconds.
-   * After the last file change, wait this long before triggering sync.
-   * Default: 2000ms
-   */
+  /** Debounce: wait this long after the last change before syncing. Default 2000ms. */
   debounceMs?: number;
 
-  /**
-   * Callback when a sync completes (for logging/diagnostics).
-   */
+  /** Callback when a sync completes (for logging/diagnostics). */
   onSyncComplete?: (result: { filesChanged: number; durationMs: number }) => void;
 
-  /**
-   * Callback when a sync errors (for logging/diagnostics).
-   */
+  /** Callback when a sync errors, or the watcher itself errors out (diagnostics). */
   onSyncError?: (error: Error) => void;
 }
 
@@ -52,6 +44,7 @@ export class FileWatcher {
   private hasChanges = false;
   private syncing = false;
   private stopped = false;
+  private errored = false;
 
   private readonly projectRoot: string;
   private readonly config: CodeGraphConfig;
@@ -81,6 +74,7 @@ export class FileWatcher {
   start(): boolean {
     if (this.watcher) return true; // Already watching
     this.stopped = false;
+    this.errored = false;
 
     try {
       this.watcher = fs.watch(
@@ -112,10 +106,15 @@ export class FileWatcher {
         }
       );
 
-      // Handle watcher errors gracefully
+      // An fs.watch 'error' (inotify limit, dir removed/remounted) is
+      // effectively terminal — tear the handle down and mark inactive
+      // so isActive() stops claiming a live watcher (graph goes stale).
       this.watcher.on('error', (err) => {
-        logWarn('File watcher error', { error: String(err) });
-        // Don't crash — watcher may recover or user can restart
+        logWarn('File watcher error — inactive; restart to resume auto-sync', { error: String(err) });
+        this.errored = true;
+        try { this.watcher?.close(); } catch { /* ignore */ }
+        this.watcher = null;
+        this.onSyncError?.(err instanceof Error ? err : new Error(String(err)));
       });
 
       logDebug('File watcher started', { projectRoot: this.projectRoot, debounceMs: this.debounceMs });
@@ -151,7 +150,7 @@ export class FileWatcher {
    * Whether the watcher is currently active.
    */
   isActive(): boolean {
-    return this.watcher !== null && !this.stopped;
+    return this.watcher !== null && !this.stopped && !this.errored;
   }
 
   /**

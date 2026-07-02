@@ -59,33 +59,26 @@ describe('Installer Config Writer', () => {
       expect(content.mcpServers.codegraph).toBeDefined();
     });
 
-    it('should handle corrupted JSON by creating backup', () => {
-      // Create a corrupted claude.json
+    it('refuses to overwrite corrupted JSON; preserves it and backs it up', () => {
+      // A corrupted .claude.json must NOT be clobbered with just our
+      // codegraph entry (that would wipe the user's other MCP servers).
+      // The write is refused, the original bytes survive, and a
+      // timestamped backup is made.
       const claudeJson = path.join(tempDir, '.claude.json');
-      fs.writeFileSync(claudeJson, '{ this is not valid json !!!');
+      const corrupt = '{ this is not valid json !!!';
+      fs.writeFileSync(claudeJson, corrupt);
 
-      // Suppress console.warn during test
-      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      expect(() => writeMcpConfig('local')).toThrow(/not valid JSON/);
 
-      // Should not throw - gracefully handles corruption
-      writeMcpConfig('local');
+      // Original file untouched.
+      expect(fs.readFileSync(claudeJson, 'utf-8')).toBe(corrupt);
 
-      // Should have warned
-      expect(warnSpy).toHaveBeenCalled();
-      const warnMsg = warnSpy.mock.calls[0][0];
-      expect(warnMsg).toContain('Warning');
-
-      // Backup should exist
-      expect(fs.existsSync(claudeJson + '.backup')).toBe(true);
-      // Original backup content should be the corrupted content
-      const backup = fs.readFileSync(claudeJson + '.backup', 'utf-8');
-      expect(backup).toContain('this is not valid json');
-
-      // New file should be valid JSON with codegraph config
-      const content = JSON.parse(fs.readFileSync(claudeJson, 'utf-8'));
-      expect(content.mcpServers.codegraph).toBeDefined();
-
-      warnSpy.mockRestore();
+      // A timestamped backup of the corrupt original exists.
+      const backups = fs.readdirSync(tempDir).filter(
+        (f) => f.startsWith('.claude.json.corrupt-') && f.endsWith('.bak'),
+      );
+      expect(backups.length).toBeGreaterThan(0);
+      expect(fs.readFileSync(path.join(tempDir, backups[0]), 'utf-8')).toBe(corrupt);
     });
 
     it('should preserve existing valid config when adding codegraph', () => {
