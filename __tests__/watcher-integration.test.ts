@@ -61,11 +61,27 @@ describe('FileWatcher', () => {
 
 
   describe('callbacks', () => {
+    it('falls back to reconciliation after native watcher failure', async () => {
+      const syncFn = vi.fn().mockResolvedValue({ filesChanged: 1, durationMs: 1 });
+      const watcher = new FileWatcher(testDir, baseConfig, syncFn, {
+        debounceMs: 20,
+        pollIntervalMs: 50,
+      });
+      expect(watcher.start()).toBe(true);
+      const inner = (watcher as any).watcher as import('fs').FSWatcher;
+      inner.emit('error', new Error('native watcher unavailable'));
+      fs.writeFileSync(path.join(testDir, 'src', 'poll-only.ts'), 'export const p = 1;');
+      await waitFor(() => syncFn.mock.calls.length > 0, 2000, 25);
+      expect(watcher.isActive()).toBe(true);
+      watcher.stop();
+    });
+
     it('should call onSyncComplete after successful sync', async () => {
       const syncFn = vi.fn().mockResolvedValue({ filesChanged: 2, durationMs: 50 });
       const onSyncComplete = vi.fn();
       const watcher = new FileWatcher(testDir, baseConfig, syncFn, {
         debounceMs: 200,
+        pollIntervalMs: 100,
         onSyncComplete,
       });
 
@@ -84,6 +100,7 @@ describe('FileWatcher', () => {
       const onSyncError = vi.fn();
       const watcher = new FileWatcher(testDir, baseConfig, syncFn, {
         debounceMs: 200,
+        pollIntervalMs: 100,
         onSyncError,
       });
 
@@ -146,7 +163,7 @@ describe('FileWatcher', () => {
       const initialStats = cg.getStats();
       const initialNodes = initialStats.nodeCount;
 
-      cg.watch({ debounceMs: 300 });
+      cg.watch({ debounceMs: 300, pollIntervalMs: 100 });
 
       // Add a new file with a function
       fs.writeFileSync(

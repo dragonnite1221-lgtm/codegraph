@@ -11,10 +11,6 @@ import * as os from 'os';
 import { FileWatcher } from '../src/sync/watcher';
 import type { CodeGraphConfig } from '../src/types';
 import CodeGraph from '../src/index';
-
-/**
- * Helper to wait for a condition with timeout
- */
 function waitFor(
   condition: () => boolean,
   timeoutMs = 10000,
@@ -30,7 +26,6 @@ function waitFor(
     check();
   });
 }
-
 describe('FileWatcher', () => {
   let testDir: string;
 
@@ -48,7 +43,6 @@ describe('FileWatcher', () => {
 
   beforeEach(() => {
     testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-watcher-'));
-    // Create a source file so the directory isn't empty
     const srcDir = path.join(testDir, 'src');
     fs.mkdirSync(srcDir);
     fs.writeFileSync(path.join(srcDir, 'index.ts'), 'export const x = 1;');
@@ -90,7 +84,7 @@ describe('FileWatcher', () => {
 
       watcher.start();
       watcher.stop();
-      watcher.stop(); // Should not throw
+      watcher.stop();
       expect(watcher.isActive()).toBe(false);
     });
 
@@ -106,20 +100,23 @@ describe('FileWatcher', () => {
       const inner = (watcher as any).watcher as import('fs').FSWatcher;
       inner.emit('error', new Error('ENOSPC: inotify watch limit reached'));
 
-      expect(watcher.isActive()).toBe(false);
+      expect(watcher.isActive()).toBe(true); // Polling reconciliation remains active.
       expect(onSyncError).toHaveBeenCalledTimes(1);
       watcher.stop(); // still safe to call
     });
+
   });
 
   describe('debounced sync', () => {
     it('should trigger sync after file change', async () => {
       const syncFn = vi.fn().mockResolvedValue({ filesChanged: 1, durationMs: 10 });
-      const watcher = new FileWatcher(testDir, baseConfig, syncFn, { debounceMs: 200 });
+      const watcher = new FileWatcher(testDir, baseConfig, syncFn, {
+        debounceMs: 200,
+        pollIntervalMs: 100,
+      });
 
       watcher.start();
 
-      // Create a new file
       fs.writeFileSync(path.join(testDir, 'src', 'new.ts'), 'export const y = 2;');
 
       // Wait for debounced sync to fire
@@ -131,11 +128,13 @@ describe('FileWatcher', () => {
 
     it('should debounce rapid changes into a single sync', async () => {
       const syncFn = vi.fn().mockResolvedValue({ filesChanged: 1, durationMs: 10 });
-      const watcher = new FileWatcher(testDir, baseConfig, syncFn, { debounceMs: 500 });
+      const watcher = new FileWatcher(testDir, baseConfig, syncFn, {
+        debounceMs: 500,
+        pollIntervalMs: 100,
+      });
 
       watcher.start();
 
-      // Rapid-fire changes
       for (let i = 0; i < 5; i++) {
         fs.writeFileSync(
           path.join(testDir, 'src', `file${i}.ts`),
