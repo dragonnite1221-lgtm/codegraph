@@ -20,6 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      CLAUDE_ACCESS_TOKEN: ${{ secrets.CLAUDE_ACCESS_TOKEN }}
     permissions:
       contents: write
       pull-requests: write
@@ -29,9 +30,13 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 1
+      - name: Skip review when Claude credentials are not configured
+        if: env.CLAUDE_ACCESS_TOKEN == ''
+        run: echo "::notice::CLAUDE_ACCESS_TOKEN is not configured; skipping optional Claude review."
       - uses: anthropics/claude-code-action@beta
+        if: env.CLAUDE_ACCESS_TOKEN != ''
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_ACCESS_TOKEN }}
+          claude_code_oauth_token: ${{ env.CLAUDE_ACCESS_TOKEN }}
           # The action's default model can 404 when retired; pin a current one.
           model: claude-sonnet-4-6
           direct_prompt: |
