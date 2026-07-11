@@ -13,30 +13,15 @@ import { CodeGraphConfig } from '../types';
 import { shouldIncludeFile } from '../extraction';
 import { logDebug, logWarn } from '../errors';
 import { normalizePath } from '../utils';
-
-/**
- * Options for the file watcher
- */
-export interface WatchOptions {
-  /** Debounce: wait this long after the last change before syncing. Default 2000ms. */
-  debounceMs?: number;
-
-  /** Callback when a sync completes (for logging/diagnostics). */
-  onSyncComplete?: (result: { filesChanged: number; durationMs: number }) => void;
-
-  /** Callback when a sync errors, or the watcher itself errors out (diagnostics). */
-  onSyncError?: (error: Error) => void;
-}
+import { FilePoller } from './watcher-poll';
+import type { WatchOptions } from './watcher-options';
+export type { WatchOptions } from './watcher-options';
 
 /**
  * FileWatcher monitors a project directory for changes and triggers
  * debounced sync operations via a provided callback.
  *
- * Design goals:
- * - Minimal resource usage (native OS file events, no polling)
- * - Debounced to avoid thrashing on rapid saves
- * - Filters against CodeGraph include/exclude patterns
- * - Ignores .codegraph/ directory changes
+ * Native events provide low latency; polling provides eventual consistency.
  */
 export class FileWatcher {
   private watcher: fs.FSWatcher | null = null;
@@ -44,7 +29,7 @@ export class FileWatcher {
   private hasChanges = false;
   private syncing = false;
   private stopped = false;
-  private errored = false;
+  private readonly poller: FilePoller;
 
   private readonly projectRoot: string;
   private readonly config: CodeGraphConfig;
@@ -65,6 +50,21 @@ export class FileWatcher {
     this.debounceMs = options.debounceMs ?? 2000;
     this.onSyncComplete = options.onSyncComplete;
     this.onSyncError = options.onSyncError;
+    this.poller = new FilePoller(
+      projectRoot,
+      config,
+      options.pollIntervalMs ?? 30000,
+      () => {
+        if (this.stopped) return;
+        logDebug('Polling reconciliation detected file changes');
+        this.hasChanges = true;
+        this.scheduleSync();
+      },
+      (error) => {
+        logWarn('Watcher reconciliation scan failed', { error: error.message });
+        this.onSyncError?.(error);
+      },
+    );
   }
 
   /**
@@ -74,7 +74,7 @@ export class FileWatcher {
   start(): boolean {
     if (this.watcher) return true; // Already watching
     this.stopped = false;
-    this.errored = false;
+    const pollingStarted = this.poller.start();
 
     try {
       this.watcher = fs.watch(
@@ -111,7 +111,6 @@ export class FileWatcher {
       // so isActive() stops claiming a live watcher (graph goes stale).
       this.watcher.on('error', (err) => {
         logWarn('File watcher error — inactive; restart to resume auto-sync', { error: String(err) });
-        this.errored = true;
         try { this.watcher?.close(); } catch { /* ignore */ }
         this.watcher = null;
         this.onSyncError?.(err instanceof Error ? err : new Error(String(err)));
@@ -122,7 +121,7 @@ export class FileWatcher {
     } catch (err) {
       // Recursive watch not supported (e.g., Linux < Node 19)
       logWarn('Could not start file watcher — recursive fs.watch not supported on this platform', { error: String(err) });
-      return false;
+      return pollingStarted;
     }
   }
 
@@ -141,6 +140,7 @@ export class FileWatcher {
       this.watcher.close();
       this.watcher = null;
     }
+    this.poller.stop();
 
     this.hasChanges = false;
     logDebug('File watcher stopped');
@@ -150,7 +150,7 @@ export class FileWatcher {
    * Whether the watcher is currently active.
    */
   isActive(): boolean {
-    return this.watcher !== null && !this.stopped && !this.errored;
+    return !this.stopped && (this.watcher !== null || this.poller.isActive());
   }
 
   /**
