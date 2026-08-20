@@ -12,15 +12,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The published package supports Node >=18, but the dev test runner
-        # (vitest 4 / rolldown) needs node:util `styleText`, available on
-        # Node 20.12+/22. So tests run on 20 and 22.
-        node: ['20', '22']
+        include:
+          # Vitest's native rolldown binding requires Node 20.19+, while the
+          # published runtime dependencies support 20.12. Test both contracts.
+          - node: '20.12.0'
+            full-test: false
+          - node: '20.19.0'
+            full-test: true
+          - node: '22'
+            full-test: true
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node ${{ matrix.node }}
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -38,4 +43,9 @@ jobs:
         run: npm run build
 
       - name: Test
+        if: matrix.full-test
         run: npx vitest run
+
+      - name: Minimum runtime smoke test
+        if: ${{ !matrix.full-test }}
+        run: node dist/bin/codegraph.js --version

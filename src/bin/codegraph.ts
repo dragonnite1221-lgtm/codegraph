@@ -28,7 +28,7 @@ import { registerAffectedCommand } from './affected-command';
 import { registerContextCommand } from './context-command';
 import { registerFilesCommand } from './files-command';
 import { registerInstallCommand } from './install-command';
-import { buildUnsupportedNodeBlockBanner } from './node-version-check';
+import { buildUnsupportedNodeBlockBanner, isSupportedNodeVersion } from './node-version-check';
 import { registerQueryCommand } from './query-command';
 import { registerServeCommand } from './serve-command';
 import { registerUnlockCommand } from './unlock-command';
@@ -67,8 +67,7 @@ const importESM = new Function('specifier', 'return import(specifier)') as
 // Hard-exit before any WASM work; allow override via env var for users
 // who patched V8 themselves or want to test a future fix.
 const nodeVersion = process.versions.node;
-const nodeMajor = parseInt(nodeVersion.split('.')[0] ?? '0', 10);
-if (nodeMajor >= 24) {
+if (!isSupportedNodeVersion(nodeVersion)) {
   process.stderr.write(buildUnsupportedNodeBlockBanner(nodeVersion) + '\n');
   if (!process.env.CODEGRAPH_ALLOW_UNSAFE_NODE) {
     process.exit(1);
