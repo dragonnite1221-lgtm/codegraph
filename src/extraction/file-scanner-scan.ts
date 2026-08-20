@@ -6,7 +6,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { CodeGraphConfig } from '../types';
-import { normalizePath } from '../utils';
+import { isPathWithinRootReal, normalizePath } from '../utils';
 import { logDebug } from '../errors';
 import { getGitVisibleFiles, matchesGlob, shouldIncludeFile } from './file-scanner';
 
@@ -32,7 +32,7 @@ export function scanDirectory(
     const files: string[] = [];
     let count = 0;
     for (const filePath of gitFiles) {
-      if (shouldIncludeFile(filePath, config)) {
+      if (shouldIncludeFile(filePath, config) && isPathWithinRootReal(filePath, rootDir)) {
         files.push(filePath);
         count++;
         onProgress?.(count, filePath);
@@ -58,7 +58,7 @@ export async function scanDirectoryAsync(
     const files: string[] = [];
     let count = 0;
     for (const filePath of gitFiles) {
-      if (shouldIncludeFile(filePath, config)) {
+      if (shouldIncludeFile(filePath, config) && isPathWithinRootReal(filePath, rootDir)) {
         files.push(filePath);
         count++;
         onProgress?.(count, filePath);
@@ -94,6 +94,11 @@ function scanDirectoryWalk(
       return;
     }
 
+    if (!isPathWithinRootReal(realDir, rootDir)) {
+      logDebug('Skipping directory outside project root', { dir, realDir });
+      return;
+    }
+
     if (visitedDirs.has(realDir)) {
       logDebug('Skipping already-visited directory (symlink cycle)', { dir, realDir });
       return;
@@ -122,7 +127,9 @@ function scanDirectoryWalk(
         try {
           const realTarget = fs.realpathSync(fullPath);
           const stat = fs.statSync(realTarget);
-          if (stat.isDirectory()) {
+          if (!isPathWithinRootReal(realTarget, rootDir)) {
+            logDebug('Skipping symlink outside project root', { path: fullPath, realTarget });
+          } else if (stat.isDirectory()) {
             const dirPattern = relativePath + '/';
             let excluded = false;
             for (const pattern of config.exclude) {

@@ -25,7 +25,7 @@ const SENSITIVE_PATHS = new Set([
  *
  * @param projectRoot - The project root directory
  * @param filePath - The relative file path to validate
- * @returns The resolved absolute path, or null if it escapes the root
+ * @returns The canonical existing path, or null if it escapes or cannot be resolved
  */
 export function validatePathWithinRoot(projectRoot: string, filePath: string): string | null {
   const resolved = path.resolve(projectRoot, filePath);
@@ -34,7 +34,19 @@ export function validatePathWithinRoot(projectRoot: string, filePath: string): s
   if (!resolved.startsWith(normalizedRoot + path.sep) && resolved !== normalizedRoot) {
     return null;
   }
-  return resolved;
+
+  try {
+    const realPath = fs.realpathSync(resolved);
+    const realRoot = fs.realpathSync(normalizedRoot);
+    if (!realPath.startsWith(realRoot + path.sep) && realPath !== realRoot) {
+      return null;
+    }
+    return realPath;
+  } catch {
+    // Callers use the returned path for filesystem reads. If the target cannot
+    // be resolved, its containment cannot be established and access must stop.
+    return null;
+  }
 }
 
 /**
@@ -83,7 +95,8 @@ export function validateProjectPath(dirPath: string): string | null {
  *
  * Prevents path traversal attacks by ensuring the resolved absolute path
  * starts with the resolved root path. Handles '..' sequences, symlink-like
- * relative paths, and platform-specific separators.
+ * relative paths, and platform-specific separators. Resolution failures are
+ * rejected because an unreadable or broken link cannot be proven safe.
  *
  * @param filePath - The path to check (can be relative or absolute)
  * @param rootDir - The root directory that filePath must stay within
@@ -99,8 +112,8 @@ export function isPathWithinRoot(filePath: string, rootDir: string): boolean {
  * Like isPathWithinRoot but also resolves symlinks via fs.realpathSync.
  *
  * This catches symlink escapes where the logical path appears to be within
- * root but the real path on disk points elsewhere. Falls back to logical
- * path checking if realpath resolution fails (e.g. broken symlink).
+ * root but the real path on disk points elsewhere. Unresolvable paths are
+ * rejected because their containment cannot be established.
  */
 export function isPathWithinRootReal(filePath: string, rootDir: string): boolean {
   // First do the cheap logical check
@@ -114,7 +127,6 @@ export function isPathWithinRootReal(filePath: string, rootDir: string): boolean
     const realRoot = fs.realpathSync(rootDir);
     return realPath.startsWith(realRoot + path.sep) || realPath === realRoot;
   } catch {
-    // If realpath fails (broken symlink, permissions), fall back to logical check
-    return true;
+    return false;
   }
 }

@@ -8,12 +8,19 @@
 
 import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
-import { buildUnsupportedNodeBlockBanner } from '../src/bin/node-version-check';
+import {
+  buildUnsupportedNodeBlockBanner,
+  isSupportedNodeVersion,
+} from '../src/bin/node-version-check';
 
 const require = createRequire(import.meta.url);
 const {
   buildUnsupportedNodeBlockBanner: buildUnsupportedTestNodeBlockBanner,
-}: { buildUnsupportedNodeBlockBanner: (nodeVersion: string, commandName?: string) => string } =
+  isSupportedNodeVersion: isSupportedTestNodeVersion,
+}: {
+  buildUnsupportedNodeBlockBanner: (nodeVersion: string, commandName?: string) => string;
+  isSupportedNodeVersion: (nodeVersion: string) => boolean;
+} =
   require('../scripts/node-version-banner.cjs');
 
 describe('buildUnsupportedNodeBlockBanner', () => {
@@ -46,6 +53,23 @@ describe('buildUnsupportedNodeBlockBanner', () => {
     expect(buildUnsupportedNodeBlockBanner('24.16.0')).toContain(
       'github.com/colbymchenry/codegraph/issues/81'
     );
+  });
+});
+
+describe('supported Node.js range', () => {
+  it.each([
+    ['20.11.1', false],
+    ['20.12.0', true],
+    ['22.22.2', true],
+    ['24.0.0', false],
+  ])('classifies %s consistently', (version, supported) => {
+    expect(isSupportedNodeVersion(version)).toBe(supported);
+    expect(isSupportedTestNodeVersion(version)).toBe(supported);
+  });
+
+  it('explains the dependency floor to users on older Node releases', () => {
+    expect(buildUnsupportedNodeBlockBanner('20.11.1')).toContain('>=20.12.0 <24.0.0');
+    expect(buildUnsupportedTestNodeBlockBanner('18.20.8')).toContain('>=20.12.0 <24.0.0');
   });
 });
 

@@ -83,19 +83,17 @@ export function getGitVisibleFiles(rootDir: string): Set<string> | null {
       stdio: ['pipe', 'pipe', 'pipe'] as ['pipe', 'pipe', 'pipe'],
     };
 
-    const tracked = execFileSync('git', ['ls-files', '-c', '--recurse-submodules'], gitOpts);
-    for (const line of tracked.split('\n')) {
-      const trimmed = line.trim();
-      if (trimmed) {
-        files.add(normalizePath(trimmed));
+    const tracked = execFileSync('git', ['ls-files', '-z', '-c', '--recurse-submodules'], gitOpts);
+    for (const filePath of tracked.split('\0')) {
+      if (filePath) {
+        files.add(normalizePath(filePath));
       }
     }
 
-    const untracked = execFileSync('git', ['ls-files', '-o', '--exclude-standard'], gitOpts);
-    for (const line of untracked.split('\n')) {
-      const trimmed = line.trim();
-      if (trimmed) {
-        files.add(normalizePath(trimmed));
+    const untracked = execFileSync('git', ['ls-files', '-z', '-o', '--exclude-standard'], gitOpts);
+    for (const filePath of untracked.split('\0')) {
+      if (filePath) {
+        files.add(normalizePath(filePath));
       }
     }
 
@@ -125,7 +123,7 @@ export function getGitChangedFiles(
   config: CodeGraphConfig
 ): GitChanges | null {
   try {
-    const output = execFileSync('git', ['status', '--porcelain', '--no-renames'], {
+    const output = execFileSync('git', ['status', '--porcelain=v1', '-z', '--no-renames'], {
       cwd: rootDir,
       encoding: 'utf-8',
       timeout: 10000,
@@ -136,11 +134,11 @@ export function getGitChangedFiles(
     const added: string[] = [];
     const deleted: string[] = [];
 
-    for (const line of output.split('\n')) {
-      if (line.length < 4) continue;
+    for (const entry of output.split('\0')) {
+      if (entry.length < 4) continue;
 
-      const statusCode = line.substring(0, 2);
-      const filePath = normalizePath(line.substring(3));
+      const statusCode = entry.slice(0, 2);
+      const filePath = normalizePath(entry.slice(3));
       if (!shouldIncludeFile(filePath, config)) continue;
 
       if (statusCode === '??') {

@@ -22,19 +22,28 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
       CLAUDE_ACCESS_TOKEN: ${{ secrets.CLAUDE_ACCESS_TOKEN }}
     permissions:
-      contents: write
+      contents: read
       pull-requests: write
       issues: write
-      id-token: write
     steps:
-      - uses: actions/checkout@v7
+      - name: Authorize trusted repository collaborator
+        id: authorize
+        env:
+          ASSOCIATION: ${{ github.event.comment.author_association || github.event.issue.author_association || github.event.pull_request.author_association }}
+        run: |
+          case "$ASSOCIATION" in
+            OWNER|MEMBER|COLLABORATOR) echo "trusted=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "trusted=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.authorize.outputs.trusted == 'true'
         with:
           fetch-depth: 1
       - name: Skip review when Claude credentials are not configured
-        if: env.CLAUDE_ACCESS_TOKEN == ''
+        if: steps.authorize.outputs.trusted == 'true' && env.CLAUDE_ACCESS_TOKEN == ''
         run: echo "::notice::CLAUDE_ACCESS_TOKEN is not configured; skipping optional Claude review."
-      - uses: anthropics/claude-code-action@beta
-        if: env.CLAUDE_ACCESS_TOKEN != ''
+      - uses: anthropics/claude-code-action@5ee796a55f92566ecd7e39d70dd613abcbea0d7c # v1.0.197
+        if: steps.authorize.outputs.trusted == 'true' && env.CLAUDE_ACCESS_TOKEN != ''
         with:
           claude_code_oauth_token: ${{ env.CLAUDE_ACCESS_TOKEN }}
           # The action's default model can 404 when retired; pin a current one.

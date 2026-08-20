@@ -50,7 +50,7 @@ When Claude Code explores a codebase, it spawns **Explore agents** that scan fil
 
 ## Development Runtime
 
-CodeGraph supports Node.js `>=18 <24`; Node 22 LTS is the recommended development runtime. The test preflight intentionally stops on Node 24+ because compiling the bundled tree-sitter WASM grammars can crash that runtime with a V8 `Zone` out-of-memory failure. Version managers can use the checked-in `.node-version` file before running the full test suite:
+CodeGraph supports Node.js `>=20.12 <24`; Node 22 LTS is the recommended development runtime. The preflight rejects older releases because current runtime dependencies require Node 20.12+, and stops on Node 24+ because compiling the bundled tree-sitter WASM grammars can crash that runtime with a V8 `Zone` out-of-memory failure. Version managers can use the checked-in `.node-version` file before running the full test suite:
 
 ```bash
 node -v
