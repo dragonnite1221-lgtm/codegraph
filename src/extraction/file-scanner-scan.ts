@@ -94,7 +94,10 @@ function scanDirectoryWalk(
       return;
     }
 
-    if (!isPathWithinRootReal(realDir, rootDir)) {
+    // Pass the lexical path into the boundary check. Passing `realDir` here
+    // would reject a safe project whose *root* is itself a symlink (for
+    // example macOS /tmp) before the helper can compare both real paths.
+    if (!isPathWithinRootReal(dir, rootDir)) {
       logDebug('Skipping directory outside project root', { dir, realDir });
       return;
     }
@@ -127,7 +130,11 @@ function scanDirectoryWalk(
         try {
           const realTarget = fs.realpathSync(fullPath);
           const stat = fs.statSync(realTarget);
-          if (!isPathWithinRootReal(realTarget, rootDir)) {
+          // `fullPath` is still rooted beneath the configured project path.
+          // The helper resolves it and the root together, so it rejects an
+          // outward link while accepting an in-root link through a symlinked
+          // project root.
+          if (!isPathWithinRootReal(fullPath, rootDir)) {
             logDebug('Skipping symlink outside project root', { path: fullPath, realTarget });
           } else if (stat.isDirectory()) {
             const dirPattern = relativePath + '/';
