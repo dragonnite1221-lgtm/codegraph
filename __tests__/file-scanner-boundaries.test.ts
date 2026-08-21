@@ -47,6 +47,19 @@ describe('file scanner trust boundary', () => {
     expect(scanDirectory(rootDir, config)).toEqual([]);
   });
 
+  posixIt('preserves in-root files and links through a symlinked project root', () => {
+    const linkedRoot = path.join(externalDir, 'project-root');
+    const externalFile = path.join(externalDir, 'outside.ts');
+    fs.writeFileSync(path.join(rootDir, 'inside.ts'), 'export const inside = true;');
+    fs.writeFileSync(externalFile, 'export const outside = true;');
+    fs.symlinkSync(path.join(rootDir, 'inside.ts'), path.join(rootDir, 'inside-link.ts'));
+    fs.symlinkSync(externalFile, path.join(rootDir, 'outside-link.ts'));
+    fs.symlinkSync(rootDir, linkedRoot, 'dir');
+
+    const config = { ...DEFAULT_CONFIG, rootDir: linkedRoot, exclude: [] };
+    expect(scanDirectory(linkedRoot, config).sort()).toEqual(['inside-link.ts', 'inside.ts']);
+  });
+
   posixIt('fails closed when a real path cannot be resolved', () => {
     fs.symlinkSync(path.join(externalDir, 'missing'), path.join(rootDir, 'broken'));
     expect(isPathWithinRootReal('broken', rootDir)).toBe(false);
