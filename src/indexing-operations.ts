@@ -29,6 +29,14 @@ export interface IndexingDeps {
         return { success: false, filesIndexed: 0, filesSkipped: 0, filesErrored: 0, nodesCreated: 0, edgesCreated: 0, errors: [{ message: 'Could not acquire file lock - another process may be indexing', severity: 'error' as const }], durationMs: 0 };
       }
       try {
+        // Bail out before any destructive work if the caller's signal is
+        // already aborted -- orchestrator.indexAll() only checks `signal`
+        // AFTER the scan phase, which is too late: `queries.clear()` below
+        // would already have wiped the graph for a force-index that never
+        // gets to actually reindex anything.
+        if (options.signal?.aborted) {
+          return { success: false, filesIndexed: 0, filesSkipped: 0, filesErrored: 0, nodesCreated: 0, edgesCreated: 0, errors: [{ message: 'Aborted', severity: 'error' as const }], durationMs: 0 };
+        }
         // Clear only after the lock is held, so a force-index that loses
         // the lock race never wipes the existing graph (see IndexOptions.force).
         if (options.force) {

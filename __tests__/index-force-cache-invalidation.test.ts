@@ -146,4 +146,21 @@ describe('force-reindex on a reused CodeGraph instance', () => {
     expect(cg.getCallers(pickLegacy().id).some((c) => c.node.filePath === 'src/main.ts')).toBe(true);
     expect(cg.getCallers(pickUtils().id).some((c) => c.node.filePath === 'src/main.ts')).toBe(false);
   });
+
+  it('does not wipe the graph on a force-reindex called with an already-aborted signal', async () => {
+    cg = await CodeGraph.init(testDir, { index: true });
+
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await cg.indexAll({ force: true, signal: controller.signal });
+    expect(result.success).toBe(false);
+
+    // orchestrator.indexAll() only checks `signal.aborted` after its scan
+    // phase -- too late to stop `queries.clear()`, which runs before it.
+    // The graph from the initial index must survive an abort that happened
+    // before any real work could start.
+    expect(cg.getFiles().length).toBeGreaterThan(0);
+    expect(cg.getNodesByKind('function').length).toBeGreaterThan(0);
+  });
 });
