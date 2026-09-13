@@ -31,8 +31,13 @@ export interface IndexingDeps {
       try {
         // Clear only after the lock is held, so a force-index that loses
         // the lock race never wipes the existing graph (see IndexOptions.force).
+        // The resolver's caches (name/qualifiedName/import/file lookups) are
+        // keyed off the DB contents; without invalidating them here, a
+        // reused CodeGraph instance would resolve new/changed symbols
+        // against a stale index and silently drop edges.
         if (options.force) {
           deps.queries.clear();
+          deps.resolver.clearCaches();
         }
         const result = await deps.orchestrator.indexAll(options.onProgress, options.signal, options.verbose);
 
