@@ -81,6 +81,27 @@ describe('force-reindex on a reused CodeGraph instance', () => {
     expect(cg.getDetectedFrameworks()).toContain('react');
   });
 
+  it('re-detects file-extension-based frameworks after force-reindex (no package.json signal)', async () => {
+    // React's detector also matches on .tsx files present in the indexed
+    // file table, with no package.json involved at all. That table is
+    // emptied by `queries.clear()` and only repopulated once
+    // orchestrator.indexAll() finishes -- reinitializing the resolver
+    // before that (right after the clear) would see zero files and
+    // always miss this signal, even though the .tsx file is right there
+    // on disk in the force-reindexed result.
+    cg = await CodeGraph.init(testDir, { index: true });
+    expect(cg.getDetectedFrameworks()).not.toContain('react');
+
+    fs.writeFileSync(
+      path.join(testDir, 'component.tsx'),
+      `export function Widget() { return null; }\n`
+    );
+
+    const result = await cg.indexAll({ force: true });
+    expect(result.success).toBe(true);
+    expect(cg.getDetectedFrameworks()).toContain('react');
+  });
+
   it('re-resolves tsconfig path aliases after a force-reindex on a reused instance', async () => {
     fs.mkdirSync(path.join(testDir, 'src/utils'), { recursive: true });
     fs.mkdirSync(path.join(testDir, 'src/legacy'), { recursive: true });

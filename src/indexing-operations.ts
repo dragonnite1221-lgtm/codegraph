@@ -31,18 +31,24 @@ export interface IndexingDeps {
       try {
         // Clear only after the lock is held, so a force-index that loses
         // the lock race never wipes the existing graph (see IndexOptions.force).
-        // Reinitialize the resolver, not just its caches: `initialize()`
-        // also re-detects frameworks and drops the cached tsconfig/jsconfig
-        // path-alias map, both of which are otherwise never recomputed for
-        // a reused CodeGraph instance. Without it, a force-reindex would
-        // resolve the rebuilt graph against stale names (dropped edges) AND
-        // stale framework/alias config (wrong edges) if either changed
-        // since the resolver was first warmed.
         if (options.force) {
           deps.queries.clear();
-          deps.resolver.initialize();
         }
         const result = await deps.orchestrator.indexAll(options.onProgress, options.signal, options.verbose);
+
+        // Reinitialize the resolver AFTER extraction (not alongside the
+        // clear, above) so framework detectors that scan indexed files
+        // (React's .tsx fallback, Vue, SwiftUI, ASP.NET, ...) see the
+        // freshly repopulated file table instead of the just-cleared,
+        // still-empty one. `initialize()` also drops the cached
+        // knownNames/knownFiles/tsconfig-alias state, all of which are
+        // otherwise never recomputed for a reused CodeGraph instance —
+        // resolving the rebuilt graph against any of that stale state
+        // would silently drop or misdirect edges. Must still run before
+        // resolveAndPersistBatched below, which is what actually consumes it.
+        if (options.force) {
+          deps.resolver.initialize();
+        }
 
         // Resolve references to create call/import/extends edges
         if (result.success && result.filesIndexed > 0) {
