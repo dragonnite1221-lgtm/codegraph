@@ -80,4 +80,49 @@ describe('force-reindex on a reused CodeGraph instance', () => {
     expect(result.success).toBe(true);
     expect(cg.getDetectedFrameworks()).toContain('react');
   });
+
+  it('re-resolves tsconfig path aliases after a force-reindex on a reused instance', async () => {
+    fs.mkdirSync(path.join(testDir, 'src/utils'), { recursive: true });
+    fs.mkdirSync(path.join(testDir, 'src/legacy'), { recursive: true });
+    fs.writeFileSync(
+      path.join(testDir, 'src/utils/format.ts'),
+      `export function pickMe(): number { return 1; }\n`
+    );
+    fs.writeFileSync(
+      path.join(testDir, 'src/legacy/format.ts'),
+      `export function pickMe(): number { return 99; }\n`
+    );
+    fs.writeFileSync(
+      path.join(testDir, 'src/main.ts'),
+      `import { pickMe } from '@app/format';\nexport function go(): number { return pickMe(); }\n`
+    );
+    fs.writeFileSync(
+      path.join(testDir, 'tsconfig.json'),
+      JSON.stringify({ compilerOptions: { baseUrl: './src', paths: { '@app/*': ['utils/*'] } } })
+    );
+
+    cg = await CodeGraph.init(testDir, { index: true });
+
+    const pickUtils = () =>
+      cg.getNodesByKind('function').find((n) => n.name === 'pickMe' && n.filePath === 'src/utils/format.ts')!;
+    const pickLegacy = () =>
+      cg.getNodesByKind('function').find((n) => n.name === 'pickMe' && n.filePath === 'src/legacy/format.ts')!;
+
+    expect(cg.getCallers(pickUtils().id).some((c) => c.node.filePath === 'src/main.ts')).toBe(true);
+    expect(cg.getCallers(pickLegacy().id).some((c) => c.node.filePath === 'src/main.ts')).toBe(false);
+
+    // Repoint the alias at the legacy directory instead — a cached, stale
+    // projectAliases map would keep resolving '@app/format' to src/utils/
+    // even though the config now says src/legacy/.
+    fs.writeFileSync(
+      path.join(testDir, 'tsconfig.json'),
+      JSON.stringify({ compilerOptions: { baseUrl: './src', paths: { '@app/*': ['legacy/*'] } } })
+    );
+
+    const result = await cg.indexAll({ force: true });
+    expect(result.success).toBe(true);
+
+    expect(cg.getCallers(pickLegacy().id).some((c) => c.node.filePath === 'src/main.ts')).toBe(true);
+    expect(cg.getCallers(pickUtils().id).some((c) => c.node.filePath === 'src/main.ts')).toBe(false);
+  });
 });

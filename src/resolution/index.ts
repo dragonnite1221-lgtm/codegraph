@@ -52,8 +52,9 @@ export class ReferenceResolver {
   private knownFiles: Set<string> | null = null;
   private cachesWarmed = false;
   // tsconfig/jsconfig path-alias map. `undefined` = not yet computed,
-  // `null` = computed and absent. Treated as immutable for the
-  // resolver's lifetime; callers re-create the resolver if config changes.
+  // `null` = computed and absent; reset to `undefined` by clearCaches() so
+  // a reused resolver recomputes it (lazily, on next access) instead of
+  // resolving against a tsconfig/jsconfig that no longer matches disk.
   private projectAliases: AliasMap | null | undefined = undefined;
 
   constructor(projectRoot: string, queries: QueryBuilder) {
@@ -112,6 +113,7 @@ export class ReferenceResolver {
     this.knownNames = null;
     this.knownFiles = null;
     this.cachesWarmed = false;
+    this.projectAliases = undefined;
   }
 
   /** Resolve all unresolved references */
