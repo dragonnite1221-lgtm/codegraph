@@ -17,7 +17,7 @@ import {
   FrameworkResolver,
   ImportMapping,
 } from './types';
-import { detectFrameworks } from './frameworks';
+import { detectFrameworks, resetCargoWorkspaceCache } from './frameworks';
 import { type AliasMap } from './path-aliases';
 import type { ReExport } from './types';
 import { createResolutionContext } from './resolution-context';
@@ -114,6 +114,9 @@ export class ReferenceResolver {
     this.knownFiles = null;
     this.cachesWarmed = false;
     this.projectAliases = undefined;
+    // Framework-local caches keyed by this resolver's (long-lived) context
+    // object aren't touched by anything above -- reset them explicitly.
+    resetCargoWorkspaceCache(this.context);
   }
 
   /** Resolve all unresolved references */

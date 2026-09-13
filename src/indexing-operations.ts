@@ -39,6 +39,17 @@ export interface IndexingDeps {
         }
         // Clear only after the lock is held, so a force-index that loses
         // the lock race never wipes the existing graph (see IndexOptions.force).
+        // ponytail: this still isn't fully cancellation-safe -- aborting (or
+        // crashing) mid-scan/mid-parse, after this clear runs but before
+        // orchestrator.indexAll() finishes, leaves a partially-rebuilt graph.
+        // Closing that gap needs a staged rebuild (write into a shadow
+        // table set, swap atomically) or a WAL-aware snapshot/restore
+        // across both the native and WASM SQLite backends -- a bigger
+        // change than this fix. The pre-existing lock-race and the
+        // already-aborted-signal cases above are the two failure shapes
+        // that destroy the graph with 100% certainty and zero replacement
+        // work done; this narrows to the same "index was cancelled midway"
+        // exposure every other index/sync path here already has.
         if (options.force) {
           deps.queries.clear();
         }
