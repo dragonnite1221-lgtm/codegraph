@@ -34,6 +34,21 @@ interface ExtractionStorageQueries {
  *   protected/internal/undefined) is treated as still reachable -- this is
  *   a filter for the common, clear-cut disqualifying cases, not a full
  *   language-aware access-control model.
+ *
+ * ponytail: this is node-local, not ancestor-aware. A method never gets its
+ * own `isExported` (only extractFunction sets it; extractMethod doesn't --
+ * see extractors-callable.ts), so `export class Foo { m() {} }` losing its
+ * `export` doesn't disqualify calls into `Foo.m` even though `Foo` itself
+ * now correctly reports isExported: false. Likewise Java/Kotlin/etc.
+ * package-private (no modifier) is indistinguishable from "visibility not
+ * tracked" here, since both are `undefined`. Closing this needs the same
+ * containment-chain + language-aware access-control modeling the resolution
+ * engine itself doesn't have either (its own isExported use, in
+ * name-match-helpers.ts, is a scoring bonus, not a hard reachability
+ * check) -- out of scope for this fix. The failure direction here is
+ * "preserves an edge that's no longer valid" (stale-but-harmless), not
+ * "drops a valid one" (the bug this file exists to fix), so it's a
+ * narrower miss than the pre-fix behavior of replaying unconditionally.
  */
 function isStillReferenceable(node: Node): boolean {
   if (node.kind === 'file') return true;

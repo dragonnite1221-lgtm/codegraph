@@ -46,10 +46,16 @@ export const pascalExtractor: LanguageExtractor = {
     }
     return undefined;
   },
-  isExported: (_node, _source) => {
-    // In Pascal, symbols declared in the interface section are exported
-    return false;
-  },
+  // No isExported hook: this used to unconditionally `return false`
+  // (contradicting its own comment that interface-section symbols ARE
+  // exported), which meant every Pascal node reported isExported: false
+  // regardless of section. Since node.isExported is otherwise undefined
+  // (falsy) for Pascal either way, dropping the hook is behavior-neutral
+  // for every existing false-check (`if (candidate.isExported)`); it only
+  // stops confidently reporting "not exported" for symbols that are.
+  // Properly distinguishing interface vs. implementation section requires
+  // walking up to the grammar's `interface`/`implementation` section nodes
+  // (see pascal-visitor.ts) and is left as a follow-up.
   isStatic: (node) => {
     for (let i = 0; i < node.childCount; i++) {
       if (node.child(i)?.type === 'kClass') return true;
