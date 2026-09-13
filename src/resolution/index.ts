@@ -75,10 +75,17 @@ export class ReferenceResolver {
     });
   }
 
-  /** Initialize the resolver (detect frameworks, etc.) */
+  /**
+   * Initialize (or reinitialize) the resolver: detect frameworks and reset
+   * all caches. Caches are cleared FIRST so framework detection's
+   * `context.readFile('package.json')` never reads through a stale
+   * `fileCache` entry left over from a previous indexing pass on a reused
+   * resolver instance (the cache is empty on first construction, so this
+   * ordering is a no-op there).
+   */
   initialize(): void {
-    this.frameworks = detectFrameworks(this.context);
     this.clearCaches();
+    this.frameworks = detectFrameworks(this.context);
   }
 
   /**

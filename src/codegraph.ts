@@ -26,7 +26,7 @@ import { ContextBuilder, createContextBuilder } from './context';
 import { Mutex, FileLock } from './utils';
 import { FileWatcher, WatchOptions } from './sync';
 import { runIndexAll, runIndexFiles, runSync } from './indexing-operations';
-import type { InitOptions, OpenOptions, IndexOptions } from './codegraph-types';
+import type { InitOptions, OpenOptions, IndexOptions, IndexAllOptions } from './codegraph-types';
 import {
   initCodeGraph, initCodeGraphSync, openCodeGraph, openCodeGraphSync,
 } from './codegraph-lifecycle';
@@ -101,7 +101,7 @@ export class CodeGraph {
     this.resolver = createResolver(this.projectRoot, this.queries);
   }
   getProjectRoot(): string { return this.projectRoot; }
-  async indexAll(options: IndexOptions = {}): Promise<IndexResult> { return runIndexAll(this.indexingDeps(), options); }
+  async indexAll(options: IndexAllOptions = {}): Promise<IndexResult> { return runIndexAll(this.indexingDeps(), options); }
   async indexFiles(filePaths: string[]): Promise<IndexResult> { return runIndexFiles(this.indexingDeps(), filePaths); }
   async sync(options: IndexOptions = {}): Promise<SyncResult> { return runSync(this.indexingDeps(), options); }
   isIndexing(): boolean { return this.indexMutex.isLocked(); }

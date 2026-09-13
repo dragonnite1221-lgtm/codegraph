@@ -32,6 +32,15 @@ export interface IndexOptions {
   signal?: AbortSignal;
   /** Enable verbose logging (worker lifecycle, memory, timeouts) */
   verbose?: boolean;
+}
+
+/**
+ * Options for a full `indexAll` run. `force` only makes sense for a full
+ * reindex — `sync()` is inherently incremental and silently ignores it — so
+ * it's kept off the shared `IndexOptions` to make `sync({ force: true })` a
+ * compile error instead of a silent no-op.
+ */
+export interface IndexAllOptions extends IndexOptions {
   /**
    * Clear the existing graph before indexing. Only takes effect once the
    * mutex + cross-process file lock are held, so a rejected force-index

@@ -11,7 +11,7 @@ import type { Mutex, FileLock } from './utils';
 import type { ExtractionOrchestrator, IndexResult, SyncResult } from './extraction';
 import type { QueryBuilder } from './db/queries';
 import type { ReferenceResolver } from './resolution';
-import type { IndexOptions } from './index';
+import type { IndexOptions, IndexAllOptions } from './index';
 
 export interface IndexingDeps {
   indexMutex: Mutex;
@@ -21,7 +21,7 @@ export interface IndexingDeps {
   resolver: ReferenceResolver;
 }
 
-  export async function runIndexAll(deps: IndexingDeps, options: IndexOptions = {}): Promise<IndexResult> {
+  export async function runIndexAll(deps: IndexingDeps, options: IndexAllOptions = {}): Promise<IndexResult> {
     return deps.indexMutex.withLock(async () => {
       try {
         deps.fileLock.acquire();
@@ -31,13 +31,16 @@ export interface IndexingDeps {
       try {
         // Clear only after the lock is held, so a force-index that loses
         // the lock race never wipes the existing graph (see IndexOptions.force).
-        // The resolver's caches (name/qualifiedName/import/file lookups) are
-        // keyed off the DB contents; without invalidating them here, a
-        // reused CodeGraph instance would resolve new/changed symbols
-        // against a stale index and silently drop edges.
+        // Reinitialize the resolver, not just its caches: `initialize()`
+        // also re-detects frameworks and drops the cached tsconfig/jsconfig
+        // path-alias map, both of which are otherwise never recomputed for
+        // a reused CodeGraph instance. Without it, a force-reindex would
+        // resolve the rebuilt graph against stale names (dropped edges) AND
+        // stale framework/alias config (wrong edges) if either changed
+        // since the resolver was first warmed.
         if (options.force) {
           deps.queries.clear();
-          deps.resolver.clearCaches();
+          deps.resolver.initialize();
         }
         const result = await deps.orchestrator.indexAll(options.onProgress, options.signal, options.verbose);
 

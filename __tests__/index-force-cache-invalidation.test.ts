@@ -63,4 +63,21 @@ describe('force-reindex on a reused CodeGraph instance', () => {
     const incoming = cg.getIncomingEdges(target!.id);
     expect(incoming.some((e) => e.kind === 'calls')).toBe(true);
   });
+
+  it('re-detects frameworks after a force-reindex on a reused instance', async () => {
+    cg = await CodeGraph.init(testDir, { index: true });
+    expect(cg.getDetectedFrameworks()).not.toContain('react');
+
+    // package.json didn't exist at first index — framework detection reads
+    // it via the resolver's fileCache, which must not serve a stale "file
+    // not found" (null) result from before this file existed.
+    fs.writeFileSync(
+      path.join(testDir, 'package.json'),
+      JSON.stringify({ dependencies: { react: '^18.0.0' } })
+    );
+
+    const result = await cg.indexAll({ force: true });
+    expect(result.success).toBe(true);
+    expect(cg.getDetectedFrameworks()).toContain('react');
+  });
 });
