@@ -29,6 +29,11 @@ export interface IndexingDeps {
         return { success: false, filesIndexed: 0, filesSkipped: 0, filesErrored: 0, nodesCreated: 0, edgesCreated: 0, errors: [{ message: 'Could not acquire file lock - another process may be indexing', severity: 'error' as const }], durationMs: 0 };
       }
       try {
+        // Clear only after the lock is held, so a force-index that loses
+        // the lock race never wipes the existing graph (see IndexOptions.force).
+        if (options.force) {
+          deps.queries.clear();
+        }
         const result = await deps.orchestrator.indexAll(options.onProgress, options.signal, options.verbose);
 
         // Resolve references to create call/import/extends edges

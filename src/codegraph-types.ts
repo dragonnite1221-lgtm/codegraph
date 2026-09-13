@@ -32,4 +32,10 @@ export interface IndexOptions {
   signal?: AbortSignal;
   /** Enable verbose logging (worker lifecycle, memory, timeouts) */
   verbose?: boolean;
+  /**
+   * Clear the existing graph before indexing. Only takes effect once the
+   * mutex + cross-process file lock are held, so a rejected force-index
+   * (another process is indexing) never destroys the current graph.
+   */
+  force?: boolean;
 }

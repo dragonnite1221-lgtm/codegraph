@@ -43,9 +43,11 @@ export function registerIndexCommand(program: Command, deps: CliCommandDeps): vo
         const cg = await CodeGraph.open(projectPath);
 
         if (options.quiet) {
-          // Quiet mode: no UI, just run
-          if (options.force) cg.clear();
-          const result = await cg.indexAll();
+          // Quiet mode: no UI, just run. `force` clears inside indexAll,
+          // only once the lock is actually held (see IndexOptions.force) —
+          // never eagerly here, where a losing lock race would wipe the
+          // graph with no reindex to follow.
+          const result = await cg.indexAll({ force: options.force });
           if (!result.success) process.exit(1);
           cg.destroy();
           return;
@@ -54,20 +56,19 @@ export function registerIndexCommand(program: Command, deps: CliCommandDeps): vo
         const clack = await importESM('@clack/prompts');
         clack.intro('Indexing project');
 
-        if (options.force) {
-          cg.clear();
-          clack.log.info('Cleared existing index');
-        }
-
         let result: IndexResult;
 
         if (options.verbose) {
-          result = await cg.indexAll({ onProgress: createVerboseProgress(), verbose: true });
+          result = await cg.indexAll({ onProgress: createVerboseProgress(), verbose: true, force: options.force });
         } else {
           process.stdout.write(`${colors.dim}${getGlyphs().rail}${colors.reset}\n`);
           const progress = createShimmerProgress();
-          result = await cg.indexAll({ onProgress: progress.onProgress });
+          result = await cg.indexAll({ onProgress: progress.onProgress, force: options.force });
           await progress.stop();
+        }
+
+        if (options.force && result.success) {
+          clack.log.info('Cleared existing index');
         }
 
         printIndexResult(clack, result, projectPath);
