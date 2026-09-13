@@ -66,7 +66,12 @@ export interface IndexingDeps {
         return { success: false, filesIndexed: 0, filesSkipped: 0, filesErrored: 0, nodesCreated: 0, edgesCreated: 0, errors: [{ message: 'Could not acquire file lock - another process may be indexing', severity: 'error' as const }], durationMs: 0 };
       }
       try {
-        return deps.orchestrator.indexFiles(filePaths);
+        // Must await here (not `return deps.orchestrator.indexFiles(...)`):
+        // the outer try/finally releases the cross-process file lock as
+        // soon as the try block's completion value is produced, not when
+        // the returned promise settles. Returning the promise unawaited
+        // let the lock be released while indexing was still in flight.
+        return await deps.orchestrator.indexFiles(filePaths);
       } finally {
         deps.fileLock.release();
       }
