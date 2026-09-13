@@ -37,23 +37,23 @@ export interface IndexingDeps {
         if (options.signal?.aborted) {
           return { success: false, filesIndexed: 0, filesSkipped: 0, filesErrored: 0, nodesCreated: 0, edgesCreated: 0, errors: [{ message: 'Aborted', severity: 'error' as const }], durationMs: 0 };
         }
-        // Clear only after the lock is held, so a force-index that loses
-        // the lock race never wipes the existing graph (see IndexOptions.force).
-        // ponytail: this still isn't fully cancellation-safe -- aborting (or
-        // crashing) mid-scan/mid-parse, after this clear runs but before
-        // orchestrator.indexAll() finishes, leaves a partially-rebuilt graph.
-        // Closing that gap needs a staged rebuild (write into a shadow
-        // table set, swap atomically) or a WAL-aware snapshot/restore
-        // across both the native and WASM SQLite backends -- a bigger
-        // change than this fix. The pre-existing lock-race and the
-        // already-aborted-signal cases above are the two failure shapes
-        // that destroy the graph with 100% certainty and zero replacement
-        // work done; this narrows to the same "index was cancelled midway"
-        // exposure every other index/sync path here already has.
-        if (options.force) {
-          deps.queries.clear();
-        }
-        const result = await deps.orchestrator.indexAll(options.onProgress, options.signal, options.verbose);
+        // Clear only after the lock is held (a force-index that loses the
+        // lock race never wipes the existing graph -- see IndexOptions.force)
+        // AND only via `beforeParse`, which orchestrator.indexAll() invokes
+        // after its own scan phase + abort check pass, right before it
+        // starts parsing. That defers the destructive clear past grammar
+        // init and the full directory scan, so an abort during either of
+        // those (already covered above for the abort-before-any-of-this
+        // case) never destroys the graph with no replacement work even
+        // started. ponytail: parsing itself still isn't cancellation-safe --
+        // an abort mid-parse, after the clear runs, leaves a partially
+        // rebuilt graph. Closing that needs a staged rebuild (shadow table
+        // set + atomic swap) or WAL-aware snapshot/restore across both
+        // SQLite backends -- a bigger change than this fix, and the same
+        // "cancelled mid-run" exposure every other index/sync path here
+        // already has (none of them are transactional either).
+        const beforeParse = options.force ? () => deps.queries.clear() : undefined;
+        const result = await deps.orchestrator.indexAll(options.onProgress, options.signal, options.verbose, beforeParse);
 
         // Reinitialize the resolver AFTER extraction (not alongside the
         // clear, above) so framework detectors that scan indexed files

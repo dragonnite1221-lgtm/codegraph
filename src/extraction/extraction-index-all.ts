@@ -20,7 +20,16 @@ export async function indexAll(
   orch: OrchestratorApi,
   onProgress?: (progress: IndexProgress) => void,
   signal?: AbortSignal,
-  verbose?: boolean
+  verbose?: boolean,
+  /**
+   * Invoked once scanning has finished and this function's own abort check
+   * has passed, right before parsing starts. Lets a caller defer a
+   * destructive "clear everything first" step (force-reindex) until it's
+   * actually about to be followed by real work, instead of running it
+   * upfront where an abort during grammar init/scanning would leave it
+   * with nothing to replace what it just destroyed.
+   */
+  beforeParse?: () => void
 ): Promise<IndexResult> {
   await initGrammars();
   const startTime = Date.now();
@@ -55,6 +64,8 @@ export async function indexAll(
       durationMs: Date.now() - startTime,
     };
   }
+
+  beforeParse?.();
 
   // Phase 2: Parse files in a worker thread (keeps main thread unblocked for UI)
   const total = files.length;
