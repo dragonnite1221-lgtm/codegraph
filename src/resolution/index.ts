@@ -17,7 +17,7 @@ import {
   FrameworkResolver,
   ImportMapping,
 } from './types';
-import { detectFrameworks } from './frameworks';
+import { detectFrameworks, resetCargoWorkspaceCache } from './frameworks';
 import { type AliasMap } from './path-aliases';
 import type { ReExport } from './types';
 import { createResolutionContext } from './resolution-context';
@@ -52,8 +52,9 @@ export class ReferenceResolver {
   private knownFiles: Set<string> | null = null;
   private cachesWarmed = false;
   // tsconfig/jsconfig path-alias map. `undefined` = not yet computed,
-  // `null` = computed and absent. Treated as immutable for the
-  // resolver's lifetime; callers re-create the resolver if config changes.
+  // `null` = computed and absent; reset to `undefined` by clearCaches() so
+  // a reused resolver recomputes it (lazily, on next access) instead of
+  // resolving against a tsconfig/jsconfig that no longer matches disk.
   private projectAliases: AliasMap | null | undefined = undefined;
 
   constructor(projectRoot: string, queries: QueryBuilder) {
@@ -75,10 +76,17 @@ export class ReferenceResolver {
     });
   }
 
-  /** Initialize the resolver (detect frameworks, etc.) */
+  /**
+   * Initialize (or reinitialize) the resolver: detect frameworks and reset
+   * all caches. Caches are cleared FIRST so framework detection's
+   * `context.readFile('package.json')` never reads through a stale
+   * `fileCache` entry left over from a previous indexing pass on a reused
+   * resolver instance (the cache is empty on first construction, so this
+   * ordering is a no-op there).
+   */
   initialize(): void {
-    this.frameworks = detectFrameworks(this.context);
     this.clearCaches();
+    this.frameworks = detectFrameworks(this.context);
   }
 
   /**
@@ -105,6 +113,10 @@ export class ReferenceResolver {
     this.knownNames = null;
     this.knownFiles = null;
     this.cachesWarmed = false;
+    this.projectAliases = undefined;
+    // Framework-local caches keyed by this resolver's (long-lived) context
+    // object aren't touched by anything above -- reset them explicitly.
+    resetCargoWorkspaceCache(this.context);
   }
 
   /** Resolve all unresolved references */

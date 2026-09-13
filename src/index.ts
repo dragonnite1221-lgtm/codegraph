@@ -40,6 +40,6 @@ export { FileWatcher, WatchOptions } from './sync';
 export { MCPServer } from './mcp';
 
 // CodeGraph facade + its option types
-export type { InitOptions, OpenOptions, IndexOptions } from './codegraph-types';
+export type { InitOptions, OpenOptions, IndexOptions, IndexAllOptions } from './codegraph-types';
 export { CodeGraph } from './codegraph';
 export { default } from './codegraph';

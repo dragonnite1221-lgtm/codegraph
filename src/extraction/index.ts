@@ -116,9 +116,10 @@ export class ExtractionOrchestrator implements OrchestratorApi {
   indexAll(
     onProgress?: (progress: IndexProgress) => void,
     signal?: AbortSignal,
-    verbose?: boolean
+    verbose?: boolean,
+    beforeParse?: () => void
   ): Promise<IndexResult> {
-    return runIndexAll(this, onProgress, signal, verbose);
+    return runIndexAll(this, onProgress, signal, verbose, beforeParse);
   }
 
   /** Index specific files */

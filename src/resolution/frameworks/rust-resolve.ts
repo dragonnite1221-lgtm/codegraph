@@ -16,6 +16,18 @@ function getCachedCargoWorkspaceCrateMap(context: ResolutionContext): Map<string
   return map;
 }
 
+/**
+ * Drop this context's cached Cargo workspace crate map. The resolver keeps
+ * the same `ResolutionContext` object for its whole lifetime, so this
+ * module-level cache (keyed by that object's identity) otherwise survives
+ * `ReferenceResolver.clearCaches()`/`initialize()` forever — a force-reindex
+ * on a reused CodeGraph instance would keep resolving against workspace
+ * member paths read from Cargo.toml at first index, even after it changed.
+ */
+export function resetCargoWorkspaceCache(context: ResolutionContext): void {
+  cargoWorkspaceMapCache.delete(context);
+}
+
 // Directory patterns
 export const HANDLER_DIRS = ['/handlers/', '/handler/', '/api/', '/routes/', '/controllers/'];
 export const SERVICE_DIRS = ['/services/', '/service/', '/repository/', '/domain/'];

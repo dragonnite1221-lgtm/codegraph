@@ -113,5 +113,6 @@ export { railsResolver } from './ruby';
 export { springResolver } from './java';
 export { goResolver } from './go';
 export { rustResolver } from './rust';
+export { resetCargoWorkspaceCache } from './rust-resolve';
 export { aspnetResolver } from './csharp';
 export { swiftUIResolver, uikitResolver, vaporResolver } from './swift';
