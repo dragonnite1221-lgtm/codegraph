@@ -1,7 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 
+import { DatabaseConnection } from '../src/db';
+import { QueryBuilder } from '../src/db/queries';
 import { storeExtractionResult } from '../src/extraction/result-storage';
-import type { Edge, ExtractionResult, FileRecord, Node } from '../src/types';
+import type { Edge, ExtractionResult, Node } from '../src/types';
 
 /**
  * Regression: reindexing a file cascades-deletes edges.target too, which
@@ -10,7 +15,12 @@ import type { Edge, ExtractionResult, FileRecord, Node } from '../src/types';
  * identity. storeExtractionResult must replay those edges when the target
  * symbol's id survives the reindex, and must NOT replay them when it
  * doesn't (an actual rename/removal) or when it's no longer a valid
- * external reference target (e.g. `export` was dropped).
+ * external reference target (e.g. `export`/`public` was dropped).
+ *
+ * Runs against a real SQLite-backed QueryBuilder (not a hand-rolled mock)
+ * so the actual `getIncomingEdgesForTargets` json_each query, ON DELETE
+ * CASCADE behavior, and transaction/insert path this patch touches are
+ * exercised, not stubbed away.
  */
 
 function makeNode(id: string, overrides: Partial<Node> = {}): Node {
@@ -41,45 +51,42 @@ function makeResult(overrides: Partial<ExtractionResult> = {}): ExtractionResult
   };
 }
 
-function makeQueries(existingFile: FileRecord, oldNodes: Node[], incomingByTarget: Record<string, Edge[]>) {
-  return {
-    deleted: [] as string[],
-    edges: [] as Edge[][],
-    getFileByPath: () => existingFile,
-    getNodesByFile: () => oldNodes,
-    getIncomingEdgesForTargets(targetIds: string[]) {
-      return targetIds.flatMap((id) => incomingByTarget[id] ?? []);
-    },
-    deleteFile(filePath: string) {
-      this.deleted.push(filePath);
-    },
-    insertNodes() {},
-    insertEdges(edges: Edge[]) {
-      this.edges.push(edges);
-    },
-    insertUnresolvedRefsBatch() {},
-    upsertFile() {},
-    transaction<T>(fn: () => T): T {
-      return fn();
-    },
-  };
-}
+describe('cross-file incoming edges on reindex (real SQLite)', () => {
+  let dir: string;
+  let conn: DatabaseConnection;
+  let queries: QueryBuilder;
 
-const existingFile: FileRecord = {
-  path: 'src/b.ts',
-  contentHash: 'old-hash',
-  language: 'typescript',
-  size: 5,
-  modifiedAt: 1,
-  indexedAt: 1,
-  nodeCount: 1,
-};
-const oldTarget = makeNode('target');
-const callerEdge: Edge = { source: 'caller', target: 'target', kind: 'calls', line: 4, column: 9 };
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-result-storage-'));
+    conn = DatabaseConnection.initialize(path.join(dir, 'test.db'));
+    queries = new QueryBuilder(conn.getDb());
+  });
 
-describe('cross-file incoming edges on reindex', () => {
+  afterEach(() => {
+    conn.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** Seed b.ts with one old node and one incoming edge from a.ts's 'caller'. */
+  function seed(oldTarget: Node, callerEdge: Edge) {
+    queries.insertNode({ ...makeNode('caller'), filePath: 'src/a.ts' });
+    queries.insertNode(oldTarget);
+    queries.insertEdge(callerEdge);
+    queries.upsertFile({
+      path: 'src/b.ts',
+      contentHash: 'old-hash',
+      language: 'typescript',
+      size: 5,
+      modifiedAt: 1,
+      indexedAt: 1,
+      nodeCount: 1,
+    });
+  }
+
   it('preserves the caller edge when the callee id survives the reindex', () => {
-    const queries = makeQueries(existingFile, [oldTarget], { target: [callerEdge] });
+    const oldTarget = makeNode('target');
+    const callerEdge: Edge = { source: 'caller', target: 'target', kind: 'calls', line: 4, column: 9 };
+    seed(oldTarget, callerEdge);
 
     storeExtractionResult(
       queries,
@@ -90,15 +97,19 @@ describe('cross-file incoming edges on reindex', () => {
       makeResult({ nodes: [makeNode('target')] })
     );
 
-    expect(queries.deleted).toEqual(['src/b.ts']);
-    expect(queries.edges.flat()).toContainEqual(callerEdge);
+    expect(queries.getIncomingEdgesForTargets(['target'])).toContainEqual(
+      expect.objectContaining(callerEdge)
+    );
   });
 
   it('drops the caller edge when the callee symbol does not survive the reindex', () => {
-    const queries = makeQueries(existingFile, [oldTarget], { target: [callerEdge] });
+    const oldTarget = makeNode('target');
+    const callerEdge: Edge = { source: 'caller', target: 'target', kind: 'calls', line: 4, column: 9 };
+    seed(oldTarget, callerEdge);
 
     // b.ts was reparsed and no longer produces a node with id 'target'
-    // (renamed or removed) -- the old caller edge must not be resurrected.
+    // (renamed or removed) -- the old caller edge must not be resurrected,
+    // and the cascade delete already removed it from the DB.
     storeExtractionResult(
       queries,
       'src/b.ts',
@@ -108,16 +119,17 @@ describe('cross-file incoming edges on reindex', () => {
       makeResult({ nodes: [makeNode('renamedTarget')] })
     );
 
-    expect(queries.deleted).toEqual(['src/b.ts']);
-    expect(queries.edges.flat()).not.toContainEqual(callerEdge);
+    expect(queries.getIncomingEdgesForTargets(['target', 'renamedTarget'])).toEqual([]);
   });
 
-  it('drops the caller edge when the surviving id is no longer exported', () => {
-    const queries = makeQueries(existingFile, [oldTarget], { target: [callerEdge] });
+  it('drops the caller edge when the surviving id is no longer exported (JS/TS-style)', () => {
+    const oldTarget = makeNode('target');
+    const callerEdge: Edge = { source: 'caller', target: 'target', kind: 'calls', line: 4, column: 9 };
+    seed(oldTarget, callerEdge);
 
     // The id survives (same file+kind+name+line), but `export` was dropped
-    // from the declaration -- it's no longer reachable from other files,
-    // even though the old cross-file edge still references it by id.
+    // from the declaration -- extractors that track isExported (JS/TS) now
+    // report false, so it's no longer reachable from other files.
     storeExtractionResult(
       queries,
       'src/b.ts',
@@ -127,11 +139,38 @@ describe('cross-file incoming edges on reindex', () => {
       makeResult({ nodes: [makeNode('target', { isExported: false })] })
     );
 
-    expect(queries.edges.flat()).not.toContainEqual(callerEdge);
+    expect(queries.getIncomingEdgesForTargets(['target'])).toEqual([]);
   });
 
-  it('replays the edge when isExported is undefined (visibility not tracked)', () => {
-    const queries = makeQueries(existingFile, [oldTarget], { target: [callerEdge] });
+  it('drops the caller edge when the surviving id turns private (visibility-tracked languages)', () => {
+    // Java/C#/Rust/Kotlin/Swift extractors never set isExported -- they
+    // report access through `visibility` instead. A public-to-private
+    // change must still disqualify replay even though isExported stays
+    // undefined throughout.
+    const oldTarget = makeNode('target', { language: 'java', visibility: 'public' });
+    const callerEdge: Edge = { source: 'caller', target: 'target', kind: 'calls', line: 4, column: 9 };
+    seed(oldTarget, callerEdge);
+
+    storeExtractionResult(
+      queries,
+      'src/b.ts',
+      'new content',
+      'java',
+      { size: 9, mtimeMs: 20 } as import('fs').Stats,
+      makeResult({ nodes: [makeNode('target', { language: 'java', visibility: 'private' })] })
+    );
+
+    expect(queries.getIncomingEdgesForTargets(['target'])).toEqual([]);
+  });
+
+  it('preserves an incoming `imports` edge into the file node itself across reindex', () => {
+    // File nodes are always emitted with isExported: false (extractors have
+    // no "exported" concept for a file/module itself), but they're the
+    // normal target of cross-file `imports` edges. A naive isExported check
+    // would incorrectly drop this edge on every reindex of the imported file.
+    const fileNode = makeNode('file:src/b.ts', { kind: 'file', name: 'b.ts', isExported: false });
+    const importEdge: Edge = { source: 'caller', target: 'file:src/b.ts', kind: 'imports', line: 1, column: 0 };
+    seed(fileNode, importEdge);
 
     storeExtractionResult(
       queries,
@@ -139,35 +178,25 @@ describe('cross-file incoming edges on reindex', () => {
       'new content',
       'typescript',
       { size: 9, mtimeMs: 20 } as import('fs').Stats,
-      makeResult({ nodes: [makeNode('target')] }) // isExported left undefined
+      makeResult({ nodes: [makeNode('file:src/b.ts', { kind: 'file', name: 'b.ts', isExported: false })] })
     );
 
-    expect(queries.edges.flat()).toContainEqual(callerEdge);
+    expect(queries.getIncomingEdgesForTargets(['file:src/b.ts'])).toContainEqual(
+      expect.objectContaining(importEdge)
+    );
   });
 
   it('keeps distinct edges with the same source/target/kind/line/column but different provenance or metadata', () => {
-    const edgeA: Edge = { ...callerEdge, provenance: 'tree-sitter', metadata: { arg: 1 } };
-    const edgeB: Edge = { ...callerEdge, provenance: 'heuristic', metadata: { arg: 2 } };
-    const queries = makeQueries(existingFile, [oldTarget], { target: [edgeA, edgeB] });
-
-    storeExtractionResult(
-      queries,
-      'src/b.ts',
-      'new content',
-      'typescript',
-      { size: 9, mtimeMs: 20 } as import('fs').Stats,
-      makeResult({ nodes: [makeNode('target')] })
-    );
-
-    const preserved = queries.edges.flat();
-    expect(preserved).toContainEqual(edgeA);
-    expect(preserved).toContainEqual(edgeB);
-  });
-
-  it('dedupes truly identical edges (including matching metadata/provenance)', () => {
-    const duplicate: Edge = { ...callerEdge, provenance: 'tree-sitter', metadata: { arg: 1 } };
-    const queries = makeQueries(existingFile, [oldTarget], {
-      target: [duplicate, { ...duplicate }],
+    const oldTarget = makeNode('target');
+    const edgeA: Edge = { source: 'caller', target: 'target', kind: 'calls', line: 4, column: 9, provenance: 'tree-sitter', metadata: { arg: 1 } };
+    const edgeB: Edge = { source: 'caller', target: 'target', kind: 'calls', line: 4, column: 9, provenance: 'heuristic', metadata: { arg: 2 } };
+    queries.insertNode({ ...makeNode('caller'), filePath: 'src/a.ts' });
+    queries.insertNode(oldTarget);
+    queries.insertEdge(edgeA);
+    queries.insertEdge(edgeB);
+    queries.upsertFile({
+      path: 'src/b.ts', contentHash: 'old-hash', language: 'typescript',
+      size: 5, modifiedAt: 1, indexedAt: 1, nodeCount: 1,
     });
 
     storeExtractionResult(
@@ -179,7 +208,40 @@ describe('cross-file incoming edges on reindex', () => {
       makeResult({ nodes: [makeNode('target')] })
     );
 
-    const preserved = queries.edges.flat().filter((e) => e.source === 'caller');
-    expect(preserved).toHaveLength(1);
+    const preserved = queries.getIncomingEdgesForTargets(['target']);
+    expect(preserved).toContainEqual(edgeA);
+    expect(preserved).toContainEqual(edgeB);
+    expect(preserved).toHaveLength(2);
+  });
+
+  it('does not duplicate an edge that already exists as more than one identical row', () => {
+    // The edges table has no uniqueness constraint beyond its autoincrement
+    // id, so two genuinely identical rows can coexist (e.g. from an earlier
+    // extraction quirk). Without dedup, replaying both on every subsequent
+    // reindex would make the duplication grow without bound.
+    const oldTarget = makeNode('target');
+    const dup: Edge = { source: 'caller', target: 'target', kind: 'calls', line: 4, column: 9, provenance: 'tree-sitter', metadata: { arg: 1 } };
+    queries.insertNode({ ...makeNode('caller'), filePath: 'src/a.ts' });
+    queries.insertNode(oldTarget);
+    queries.insertEdge(dup);
+    queries.insertEdge({ ...dup });
+    queries.upsertFile({
+      path: 'src/b.ts', contentHash: 'old-hash', language: 'typescript',
+      size: 5, modifiedAt: 1, indexedAt: 1, nodeCount: 1,
+    });
+
+    storeExtractionResult(
+      queries,
+      'src/b.ts',
+      'new content',
+      'typescript',
+      { size: 9, mtimeMs: 20 } as import('fs').Stats,
+      makeResult({ nodes: [makeNode('target')] })
+    );
+
+    const preservedFromCaller = queries
+      .getIncomingEdgesForTargets(['target'])
+      .filter((e) => e.source === 'caller');
+    expect(preservedFromCaller).toHaveLength(1);
   });
 });

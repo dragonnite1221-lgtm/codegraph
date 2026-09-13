@@ -17,6 +17,32 @@ interface ExtractionStorageQueries {
 }
 
 /**
+ * Whether a surviving node is still a plausible target for a cross-file
+ * edge, given what the fresh extraction says about it now:
+ *
+ * - `file` nodes have no "exported" concept at all -- extractors always
+ *   stamp them `isExported: false` (see tree-sitter-extract.ts) even though
+ *   they're the standard target of `imports` edges. Always preservable.
+ * - `isExported` is populated by a per-language extractor hook that only a
+ *   subset of languages (JS/TS and friends) implement; `false` there is a
+ *   real, deliberate "no longer exported" signal.
+ * - Languages that track access via `visibility` instead (Java, C#, Rust,
+ *   Kotlin, Swift, ...) never set `isExported`, so `false` alone would miss
+ *   a public-to-private change there. Explicit `visibility === 'private'`
+ *   is the other disqualifying signal.
+ * - Anything else (`isExported` true/undefined, `visibility` public/
+ *   protected/internal/undefined) is treated as still reachable -- this is
+ *   a filter for the common, clear-cut disqualifying cases, not a full
+ *   language-aware access-control model.
+ */
+function isStillReferenceable(node: Node): boolean {
+  if (node.kind === 'file') return true;
+  if (node.isExported === false) return false;
+  if (node.visibility === 'private') return false;
+  return true;
+}
+
+/**
  * `deleteFile` cascades to every edge touching this file's old nodes,
  * including edges from OTHER files that call/reference into it (edges.target
  * has ON DELETE CASCADE too). Re-extracting this file only recreates edges
@@ -28,10 +54,8 @@ interface ExtractionStorageQueries {
  * is still a valid reference target in the fresh extraction (id is a hash of
  * file+kind+name+declaration line, so a body-only edit keeps it; an actual
  * rename/removal changes or drops it — but the id can also survive a
- * semantic change, e.g. `export` being dropped, that makes it unreachable
- * from other files. Re-checking `isExported` against the current result
- * catches that case; `isExported === undefined` means the extractor doesn't
- * track visibility for this node kind/language, so it doesn't block replay).
+ * semantic change, e.g. `export`/`public` being dropped, that makes it
+ * unreachable from other files; see isStillReferenceable()).
  */
 function findPreservableIncomingEdges(
   queries: ExtractionStorageQueries,
@@ -41,7 +65,7 @@ function findPreservableIncomingEdges(
   const oldNodeIds = new Set(queries.getNodesByFile(filePath).map((node) => node.id));
   const validTargetIds = [...oldNodeIds].filter((id) => {
     const survivor = survivingNodes.get(id);
-    return survivor !== undefined && survivor.isExported !== false;
+    return survivor !== undefined && isStillReferenceable(survivor);
   });
 
   const preserved: Edge[] = [];
