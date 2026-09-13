@@ -122,7 +122,15 @@ export function findPreservableIncomingEdges(
   // match after a line shift), for old nodes that are still referenceable.
   const remapped = new Map<string, Node>();
   for (const oldNode of oldNodes) {
-    const exact = survivingNodes.get(oldNode.id);
+    // id hashes file+kind+simple-name+line -- it does NOT include ancestor
+    // names, so renaming an enclosing container (class A -> B) leaves a
+    // method's id unchanged while its qualifiedName (A::m -> B::m) changes.
+    // Require both to agree before trusting the id match; otherwise fall
+    // through to the stableKey path, which correctly won't match either
+    // (the qualifiedName really did change) and the edge is dropped like
+    // any other genuine identity change.
+    const byId = survivingNodes.get(oldNode.id);
+    const exact = byId && byId.qualifiedName === oldNode.qualifiedName ? byId : undefined;
     const survivor =
       exact ??
       (oldByStableKey.get(stableKey(oldNode)) === oldNode

@@ -160,4 +160,26 @@ describe('replay eligibility on reindex (real SQLite)', () => {
     const preserved = queries.getIncomingEdgesForTargets(['target@5']);
     expect(preserved).toContainEqual(expect.objectContaining({ source: 'caller', target: 'target@5' }));
   });
+
+  it('drops the edge when an exact id match hides a qualifiedName change (enclosing container renamed)', () => {
+    // id hashes file+kind+SIMPLE name+line, not ancestor names -- renaming
+    // an enclosing class leaves a same-line method's id unchanged even
+    // though its qualifiedName (A::m -> B::m) did change. Trusting the id
+    // alone would replay the edge onto a method that's semantically a
+    // different symbol now.
+    const oldTarget = makeNode('target', { qualifiedName: 'A::m' });
+    const callerEdge: Edge = { source: 'caller', target: 'target', kind: 'calls', line: 4, column: 9 };
+    seed(oldTarget, callerEdge);
+
+    storeExtractionResult(
+      queries,
+      'src/b.ts',
+      'new content',
+      'typescript',
+      { size: 9, mtimeMs: 20 } as import('fs').Stats,
+      makeResult({ nodes: [makeNode('target', { qualifiedName: 'B::m' })] })
+    );
+
+    expect(queries.getIncomingEdgesForTargets(['target'])).toEqual([]);
+  });
 });
