@@ -138,4 +138,26 @@ describe('replay eligibility on reindex (real SQLite)', () => {
       expect.objectContaining(importEdge)
     );
   });
+
+  it('preserves the caller edge, remapped, when a line shift changes the callee id', () => {
+    // id is a hash of file+kind+name+line, but qualifiedName excludes the
+    // line -- an import added above the declaration shifts it down a line
+    // (new id) without changing its identity. The old id is gone once
+    // deleteFile() cascades, so the edge must be replayed against the new id.
+    const oldTarget = makeNode('target@4', { qualifiedName: 'target', startLine: 4 });
+    const callerEdge: Edge = { source: 'caller', target: 'target@4', kind: 'calls', line: 4, column: 9 };
+    seed(oldTarget, callerEdge);
+
+    storeExtractionResult(
+      queries,
+      'src/b.ts',
+      'new content',
+      'typescript',
+      { size: 9, mtimeMs: 20 } as import('fs').Stats,
+      makeResult({ nodes: [makeNode('target@5', { qualifiedName: 'target', startLine: 5 })] })
+    );
+
+    const preserved = queries.getIncomingEdgesForTargets(['target@5']);
+    expect(preserved).toContainEqual(expect.objectContaining({ source: 'caller', target: 'target@5' }));
+  });
 });
