@@ -9,7 +9,8 @@ import type { Edge, ExtractionResult, FileRecord, Node } from '../src/types';
  * b.ts's function) even when a body-only edit doesn't change the callee's
  * identity. storeExtractionResult must replay those edges when the target
  * symbol's id survives the reindex, and must NOT replay them when it
- * doesn't (an actual rename/removal).
+ * doesn't (an actual rename/removal) or when it's no longer a valid
+ * external reference target (e.g. `export` was dropped).
  */
 
 function makeNode(id: string, overrides: Partial<Node> = {}): Node {
@@ -40,13 +41,15 @@ function makeResult(overrides: Partial<ExtractionResult> = {}): ExtractionResult
   };
 }
 
-function makeQueries(existingFile: FileRecord, oldNodes: Node[], incomingEdges: Record<string, Edge[]>) {
+function makeQueries(existingFile: FileRecord, oldNodes: Node[], incomingByTarget: Record<string, Edge[]>) {
   return {
     deleted: [] as string[],
     edges: [] as Edge[][],
     getFileByPath: () => existingFile,
     getNodesByFile: () => oldNodes,
-    getIncomingEdges: (targetId: string) => incomingEdges[targetId] ?? [],
+    getIncomingEdgesForTargets(targetIds: string[]) {
+      return targetIds.flatMap((id) => incomingByTarget[id] ?? []);
+    },
     deleteFile(filePath: string) {
       this.deleted.push(filePath);
     },
@@ -107,5 +110,76 @@ describe('cross-file incoming edges on reindex', () => {
 
     expect(queries.deleted).toEqual(['src/b.ts']);
     expect(queries.edges.flat()).not.toContainEqual(callerEdge);
+  });
+
+  it('drops the caller edge when the surviving id is no longer exported', () => {
+    const queries = makeQueries(existingFile, [oldTarget], { target: [callerEdge] });
+
+    // The id survives (same file+kind+name+line), but `export` was dropped
+    // from the declaration -- it's no longer reachable from other files,
+    // even though the old cross-file edge still references it by id.
+    storeExtractionResult(
+      queries,
+      'src/b.ts',
+      'new content',
+      'typescript',
+      { size: 9, mtimeMs: 20 } as import('fs').Stats,
+      makeResult({ nodes: [makeNode('target', { isExported: false })] })
+    );
+
+    expect(queries.edges.flat()).not.toContainEqual(callerEdge);
+  });
+
+  it('replays the edge when isExported is undefined (visibility not tracked)', () => {
+    const queries = makeQueries(existingFile, [oldTarget], { target: [callerEdge] });
+
+    storeExtractionResult(
+      queries,
+      'src/b.ts',
+      'new content',
+      'typescript',
+      { size: 9, mtimeMs: 20 } as import('fs').Stats,
+      makeResult({ nodes: [makeNode('target')] }) // isExported left undefined
+    );
+
+    expect(queries.edges.flat()).toContainEqual(callerEdge);
+  });
+
+  it('keeps distinct edges with the same source/target/kind/line/column but different provenance or metadata', () => {
+    const edgeA: Edge = { ...callerEdge, provenance: 'tree-sitter', metadata: { arg: 1 } };
+    const edgeB: Edge = { ...callerEdge, provenance: 'heuristic', metadata: { arg: 2 } };
+    const queries = makeQueries(existingFile, [oldTarget], { target: [edgeA, edgeB] });
+
+    storeExtractionResult(
+      queries,
+      'src/b.ts',
+      'new content',
+      'typescript',
+      { size: 9, mtimeMs: 20 } as import('fs').Stats,
+      makeResult({ nodes: [makeNode('target')] })
+    );
+
+    const preserved = queries.edges.flat();
+    expect(preserved).toContainEqual(edgeA);
+    expect(preserved).toContainEqual(edgeB);
+  });
+
+  it('dedupes truly identical edges (including matching metadata/provenance)', () => {
+    const duplicate: Edge = { ...callerEdge, provenance: 'tree-sitter', metadata: { arg: 1 } };
+    const queries = makeQueries(existingFile, [oldTarget], {
+      target: [duplicate, { ...duplicate }],
+    });
+
+    storeExtractionResult(
+      queries,
+      'src/b.ts',
+      'new content',
+      'typescript',
+      { size: 9, mtimeMs: 20 } as import('fs').Stats,
+      makeResult({ nodes: [makeNode('target')] })
+    );
+
+    const preserved = queries.edges.flat().filter((e) => e.source === 'caller');
+    expect(preserved).toHaveLength(1);
   });
 });

@@ -105,6 +105,9 @@ export class QueryBuilder {
   getIncomingEdges(targetId: string, kinds?: EdgeKind[]): Edge[] {
     return this.edgeQueries.getIncomingEdges(targetId, kinds);
   }
+  getIncomingEdgesForTargets(targetIds: string[]): Edge[] {
+    return this.edgeQueries.getIncomingEdgesForTargets(targetIds);
+  }
   findEdgesBetweenNodes(nodeIds: string[], kinds?: EdgeKind[]): Edge[] {
     return this.edgeQueries.findEdgesBetweenNodes(nodeIds, kinds);
   }

@@ -6,7 +6,7 @@ import { hashContent } from './file-scanner';
 interface ExtractionStorageQueries {
   getFileByPath(filePath: string): FileRecord | null;
   getNodesByFile(filePath: string): Node[];
-  getIncomingEdges(targetId: string): Edge[];
+  getIncomingEdgesForTargets(targetIds: string[]): Edge[];
   deleteFile(filePath: string): void;
   insertNodes(nodes: ExtractionResult['nodes']): void;
   insertEdges(edges: ExtractionResult['edges']): void;
@@ -24,29 +24,43 @@ interface ExtractionStorageQueries {
  * loses its edge into this one on every reindex of the callee.
  *
  * Capture those incoming cross-file edges before the delete, and replay the
- * ones whose target symbol still exists under the same id after reindex
- * (id is a hash of file+kind+name+declaration line, so a body-only edit
- * keeps it; an actual rename/removal changes or drops it — replaying only
- * an id match avoids resurrecting edges to symbols that genuinely changed).
+ * ones whose target symbol still exists under the same id after reindex AND
+ * is still a valid reference target in the fresh extraction (id is a hash of
+ * file+kind+name+declaration line, so a body-only edit keeps it; an actual
+ * rename/removal changes or drops it — but the id can also survive a
+ * semantic change, e.g. `export` being dropped, that makes it unreachable
+ * from other files. Re-checking `isExported` against the current result
+ * catches that case; `isExported === undefined` means the extractor doesn't
+ * track visibility for this node kind/language, so it doesn't block replay).
  */
 function findPreservableIncomingEdges(
   queries: ExtractionStorageQueries,
   filePath: string,
-  survivingIds: Set<string>
+  survivingNodes: Map<string, Node>
 ): Edge[] {
   const oldNodeIds = new Set(queries.getNodesByFile(filePath).map((node) => node.id));
+  const validTargetIds = [...oldNodeIds].filter((id) => {
+    const survivor = survivingNodes.get(id);
+    return survivor !== undefined && survivor.isExported !== false;
+  });
+
   const preserved: Edge[] = [];
   const seen = new Set<string>();
 
-  for (const oldNodeId of oldNodeIds) {
-    if (!survivingIds.has(oldNodeId)) continue;
-    for (const edge of queries.getIncomingEdges(oldNodeId)) {
-      if (oldNodeIds.has(edge.source)) continue; // same-file edge — the fresh extraction recreates it
-      const key = `${edge.source}|${edge.target}|${edge.kind}|${edge.line ?? ''}|${edge.column ?? ''}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      preserved.push(edge);
-    }
+  for (const edge of queries.getIncomingEdgesForTargets(validTargetIds)) {
+    if (oldNodeIds.has(edge.source)) continue; // same-file edge — the fresh extraction recreates it
+    const key = [
+      edge.source,
+      edge.target,
+      edge.kind,
+      edge.line ?? '',
+      edge.column ?? '',
+      edge.provenance ?? '',
+      JSON.stringify(edge.metadata ?? null),
+    ].join('|');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    preserved.push(edge);
   }
 
   return preserved;
@@ -74,6 +88,7 @@ export function storeExtractionResult(
     (node) => node.id && node.kind && node.name && node.filePath && node.language
   );
   const insertedIds = new Set(validNodes.map((node) => node.id));
+  const validNodesById = new Map(validNodes.map((node) => [node.id, node]));
 
   const validEdges =
     result.edges.length > 0
@@ -94,7 +109,7 @@ export function storeExtractionResult(
       : [];
 
   const preservedEdges = existingFile
-    ? findPreservableIncomingEdges(queries, filePath, insertedIds)
+    ? findPreservableIncomingEdges(queries, filePath, validNodesById)
     : [];
 
   // Batch delete + inserts + upsert into a single transaction (one commit per

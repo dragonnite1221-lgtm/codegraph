@@ -11,6 +11,7 @@ import {
   runFindEdgesBetweenNodes,
   runGetFilteredOutgoingEdges,
   runGetIncomingEdgesByKinds,
+  runGetIncomingEdgesForTargets,
 } from './edge-queries';
 
 type StatementRunner = <T>(sql: string, fn: (stmt: SqliteStatement) => T) => T;
@@ -94,6 +95,11 @@ export class EdgeQueries {
     }
     const rows = this.stmts.getEdgesByTarget.all(targetId) as EdgeRow[];
     return rows.map(rowToEdge);
+  }
+
+  /** Get incoming edges for a batch of target node ids in a single query. */
+  getIncomingEdgesForTargets(targetIds: string[]): Edge[] {
+    return runGetIncomingEdgesForTargets(this.runStatement, targetIds);
   }
 
   /**
