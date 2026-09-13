@@ -1,9 +1,14 @@
 import type * as fs from 'fs';
 
-import type { ExtractionResult, FileRecord, Language } from '../types';
+import type { Edge, ExtractionResult, FileRecord, Language } from '../types';
 import { hashContent } from './file-scanner';
+import {
+  findPreservableIncomingEdges,
+  indexByUniqueStableKey,
+  type EdgeReplayQueries,
+} from './result-storage-edge-replay';
 
-interface ExtractionStorageQueries {
+interface ExtractionStorageQueries extends EdgeReplayQueries {
   getFileByPath(filePath: string): FileRecord | null;
   deleteFile(filePath: string): void;
   insertNodes(nodes: ExtractionResult['nodes']): void;
@@ -36,8 +41,10 @@ export function storeExtractionResult(
     (node) => node.id && node.kind && node.name && node.filePath && node.language
   );
   const insertedIds = new Set(validNodes.map((node) => node.id));
+  const validNodesById = new Map(validNodes.map((node) => [node.id, node]));
+  const validNodesByStableKey = indexByUniqueStableKey(validNodes);
 
-  const validEdges =
+  const validEdges: Edge[] =
     result.edges.length > 0
       ? result.edges.filter(
           (edge) => insertedIds.has(edge.source) && insertedIds.has(edge.target)
@@ -55,6 +62,10 @@ export function storeExtractionResult(
           }))
       : [];
 
+  const preservedEdges = existingFile
+    ? findPreservableIncomingEdges(queries, filePath, validNodesById, validNodesByStableKey)
+    : [];
+
   // Batch delete + inserts + upsert into a single transaction (one commit per
   // file instead of 3-4), which the WASM fallback fsyncs on each commit.
   queries.transaction(() => {
@@ -66,6 +77,9 @@ export function storeExtractionResult(
     }
     if (validEdges.length > 0) {
       queries.insertEdges(validEdges);
+    }
+    if (preservedEdges.length > 0) {
+      queries.insertEdges(preservedEdges);
     }
     if (refsWithContext.length > 0) {
       queries.insertUnresolvedRefsBatch(refsWithContext);

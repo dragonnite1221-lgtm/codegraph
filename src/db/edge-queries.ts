@@ -41,6 +41,18 @@ export function runGetIncomingEdgesByKinds(
   return rows.map(rowToEdge);
 }
 
+/** Get incoming edges for a batch of target node ids in a single query. */
+export function runGetIncomingEdgesForTargets(
+  runStatement: StatementRunner,
+  targetIds: string[]
+): Edge[] {
+  if (targetIds.length === 0) return [];
+
+  const sql = `SELECT * FROM edges WHERE target IN (SELECT value FROM json_each(?))`;
+  const rows = runStatement(sql, (stmt) => stmt.all(JSON.stringify(targetIds)) as EdgeRow[]);
+  return rows.map(rowToEdge);
+}
+
 export function runFindEdgesBetweenNodes(
   runStatement: StatementRunner,
   nodeIds: string[],
