@@ -26,6 +26,7 @@ export class UnresolvedReferenceQueries {
     getByName?: SqliteStatement;
     count?: SqliteStatement;
     batch?: SqliteStatement;
+    batchIds?: SqliteStatement;
   } = {};
 
   constructor(
@@ -79,12 +80,9 @@ export class UnresolvedReferenceQueries {
 
   getByName(name: string): UnresolvedReference[] {
     if (!this.stmts.getByName) {
-      this.stmts.getByName = this.db.prepare(
-        'SELECT * FROM unresolved_refs WHERE reference_name = ?'
-      );
+      this.stmts.getByName = this.db.prepare('SELECT * FROM unresolved_refs WHERE reference_name = ?');
     }
-    const rows = this.stmts.getByName.all(name) as UnresolvedRefRow[];
-    return rows.map(rowToUnresolvedReference);
+    return (this.stmts.getByName.all(name) as UnresolvedRefRow[]).map(rowToUnresolvedReference);
   }
 
   getAll(): UnresolvedReference[] {
@@ -101,12 +99,17 @@ export class UnresolvedReferenceQueries {
 
   getBatch(offset: number, limit: number): UnresolvedReference[] {
     if (!this.stmts.batch) {
-      this.stmts.batch = this.db.prepare(
-        'SELECT * FROM unresolved_refs ORDER BY id LIMIT ? OFFSET ?'
-      );
+      this.stmts.batch = this.db.prepare('SELECT * FROM unresolved_refs ORDER BY id LIMIT ? OFFSET ?');
     }
-    const rows = this.stmts.batch.all(limit, offset) as UnresolvedRefRow[];
-    return rows.map(rowToUnresolvedReference);
+    return (this.stmts.batch.all(limit, offset) as UnresolvedRefRow[]).map(rowToUnresolvedReference);
+  }
+
+  /** Row ids for a batch (same order as getBatch) -- lets the batched resolver detect a stall by row identity, not field values. */
+  getBatchIds(offset: number, limit: number): number[] {
+    if (!this.stmts.batchIds) {
+      this.stmts.batchIds = this.db.prepare('SELECT id FROM unresolved_refs ORDER BY id LIMIT ? OFFSET ?');
+    }
+    return (this.stmts.batchIds.all(limit, offset) as Array<{ id: number }>).map((r) => r.id);
   }
 
   getByFiles(filePaths: string[]): UnresolvedReference[] {

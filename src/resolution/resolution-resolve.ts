@@ -112,11 +112,6 @@ export function resolveAndPersist(
   return result;
 }
 
-/** Stable identity for a fetched batch, used to detect a genuine stall below. */
-function batchIdentity(batch: UnresolvedReference[]): string {
-  return JSON.stringify(batch.map((r) => [r.fromNodeId, r.referenceName, r.referenceKind, r.line, r.column]));
-}
-
 /**
  * Resolve and persist in batches to keep memory bounded. Persists edges and
  * prunes resolved + unresolvable refs after each batch.
@@ -144,15 +139,18 @@ export async function resolveAndPersistBatched(
     const batch = resolver.queries.getUnresolvedReferencesBatch(0, batchSize);
     if (batch.length === 0) break;
 
-    // Identify this batch by its own rows (fetched in stable `id` order),
-    // not the table's total row count -- resolveReferencesBatched() isn't
-    // lock-protected against a concurrent indexing pass inserting new
-    // unresolved refs, which could inflate the total count and mask a
-    // genuine stall, or shrink it and produce a false one. New rows from a
-    // concurrent writer always get a larger id and so always sort after
-    // this batch, never into it, so this identity is unaffected by
-    // concurrent activity elsewhere in the table.
-    const batchKey = batchIdentity(batch);
+    // Identify this batch by its actual row ids (fetched back to back with
+    // the batch itself -- both synchronous, so nothing can interleave), not
+    // by field values or the table's total row count. resolveReferencesBatched()
+    // isn't lock-protected against a concurrent indexing pass, which could:
+    // (a) reinsert a *content-identical* reference (same fromNodeId/name/
+    // kind/line/column but a different row) -- indistinguishable from the
+    // just-processed row by field values alone, but never by id; or
+    // (b) change the table's total count enough to mask or fake a stall.
+    // A concurrent writer's inserts always get a larger id and so always
+    // sort after this batch, never into it, so id identity is unaffected
+    // by activity elsewhere in the table.
+    const batchKey = JSON.stringify(resolver.queries.getUnresolvedReferencesBatchIds(0, batchSize));
 
     const result = resolveAll(resolver, batch);
 
