@@ -7,7 +7,7 @@ import * as fs from 'fs';
 import type { FileRecord } from '../types';
 import { logDebug, logWarn } from '../errors';
 import { validatePathWithinRoot } from '../utils';
-import { getGitChangedFiles, hashContent, scanDirectory } from './file-scanner';
+import { findDriftedTrackedFiles, getGitChangedFiles, hashContent, scanDirectory } from './file-scanner';
 import type { SyncOperationsContext, SyncPlan } from './sync-operations';
 
 export function addCppHeaderGrammarIfNeeded(languages: string[]): void {
@@ -51,8 +51,22 @@ export function buildGitSyncPlan(context: SyncOperationsContext): SyncPlan | nul
   const modified: string[] = [];
   const removed: string[] = [];
 
+  // `git status` only diffs the working tree against the CURRENT
+  // index/HEAD, so it stays silent about a tracked file whose content
+  // still differs from the DB's last-indexed record once that diff closes
+  // -- e.g. an uncommitted edit that got indexed and was then reverted
+  // with `git checkout -- <file>` / `git restore <file>` (HEAD never
+  // moved), or a `git checkout <other-commit>` that already matches the
+  // new HEAD by the time codegraph looks. Sweep tracked files git status
+  // didn't flag for a drifted mtime (or disappearance) so those cases
+  // aren't silently missed; the hash checks below still gate whether a
+  // drifted file actually gets reindexed.
+  const gitFlagged = new Set([...gitChanges.modified, ...gitChanges.added, ...gitChanges.deleted]);
+  const unflaggedTracked = context.queries.getAllFiles().filter((f) => !gitFlagged.has(f.path));
+  const drift = findDriftedTrackedFiles(context.rootDir, unflaggedTracked);
+
   // Deleted files — only report/delete if tracked in DB
-  for (const filePath of gitChanges.deleted) {
+  for (const filePath of [...gitChanges.deleted, ...drift.removed]) {
     const tracked = context.queries.getFileByPath(filePath);
     if (tracked) {
       removed.push(filePath);
@@ -60,7 +74,7 @@ export function buildGitSyncPlan(context: SyncOperationsContext): SyncPlan | nul
   }
 
   // Modified files — read + hash only these, compare with DB
-  for (const filePath of gitChanges.modified) {
+  for (const filePath of [...gitChanges.modified, ...drift.modified]) {
     const contentHash = readContentHash(context.rootDir, filePath, 'during sync');
     if (contentHash === null) continue;
 
@@ -82,7 +96,12 @@ export function buildGitSyncPlan(context: SyncOperationsContext): SyncPlan | nul
 
   const filesToIndex = [...modified, ...added];
   return {
-    filesChecked: gitChanges.modified.length + gitChanges.added.length + gitChanges.deleted.length,
+    filesChecked:
+      gitChanges.modified.length +
+      gitChanges.added.length +
+      gitChanges.deleted.length +
+      drift.modified.length +
+      drift.removed.length,
     added,
     modified,
     removed,
