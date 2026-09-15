@@ -125,6 +125,7 @@ export async function resolveAndPersistBatched(
 
   const total = resolver.queries.getUnresolvedReferencesCount();
   let processed = 0;
+  let remainingBefore = total;
   const aggregateStats = {
     total: 0,
     resolved: 0,
@@ -164,11 +165,21 @@ export async function resolveAndPersistBatched(
     // Yield so progress UI can render between batches
     await new Promise(resolve => setImmediate(resolve));
 
-    // If nothing was resolved or removed in this batch, we'd loop forever
-    // on the same rows. Break to avoid infinite loop.
-    if (result.resolved.length === 0 && result.unresolved.length === batch.length) {
+    // Safety net against an infinite loop: every ref in this batch was
+    // deleted above (resolved refs via result.resolved, everything else via
+    // result.unresolved), so the unresolved_refs table should always shrink
+    // by at least a full batch. Only bail here if that invariant somehow
+    // didn't hold -- i.e. the row count genuinely failed to decrease.
+    // A batch resolving *zero* references is not itself a stall signal:
+    // its refs are still removed from the table, and later batches (whose
+    // rows were never touched) may still resolve fine once, e.g., other
+    // files finish indexing -- so a single all-fail batch must not abort
+    // the batches queued behind it.
+    const remainingAfter = resolver.queries.getUnresolvedReferencesCount();
+    if (remainingAfter >= remainingBefore) {
       break;
     }
+    remainingBefore = remainingAfter;
   }
 
   return { resolved: [], unresolved: [], stats: aggregateStats };
