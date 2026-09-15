@@ -16,9 +16,16 @@ import { validatePathWithinRoot } from '../path-security';
 export interface TrackedFileDrift {
   /** Tracked files whose on-disk mtime/size no longer match the DB record. */
   modified: string[];
-  /** Tracked files that no longer exist on disk. */
+  /** Tracked files that no longer exist (or aren't a regular file) on disk. */
   removed: string[];
 }
+
+// Filesystem mtime resolution (some filesystems only tick every 1-2s) plus
+// clock skew means a file touched "just now" can report the same mtime/size
+// it had a moment ago -- the classic "racy git" problem. Anything modified
+// within this window is treated as unverifiable from stat() alone and gets
+// flagged for a real hash check rather than trusted at face value.
+const RACY_WINDOW_MS = 2000;
 
 /**
  * Find tracked files whose actual disk state has drifted from what's
@@ -37,10 +44,12 @@ export interface TrackedFileDrift {
  * This is a cheap `stat()` sweep, not a content read -- callers still
  * verify with a full content hash before treating a file as changed, so a
  * touched-but-unchanged mtime/size causes no false positive. For the
- * common case (nothing changed), each tracked file costs exactly one
- * `stat()`: the heavier realpath-based root-containment check only runs
- * for files that already look drifted, keeping this cheap enough to run
- * on every sync (including from the debounced file watcher).
+ * common case (nothing changed, and long enough ago to trust that), each
+ * tracked file costs exactly one `stat()`: the heavier realpath-based
+ * root-containment check only runs for files that already look drifted.
+ * This mirrors the synchronous execution model `getGitChangedFiles` and
+ * `getGitVisibleFiles` already use for the git-status fast path this
+ * feeds into -- it doesn't introduce a new class of blocking behavior.
  */
 export function findDriftedTrackedFiles(
   rootDir: string,
@@ -67,7 +76,18 @@ export function findDriftedTrackedFiles(
       continue;
     }
 
-    if (stats.mtimeMs === file.modifiedAt && stats.size === file.size) {
+    if (!stats.isFile()) {
+      // The tracked path is no longer a regular file -- e.g. a commit
+      // switch replaced `entry.ts` with a directory. Treat it the same as
+      // a deletion rather than letting a stale file record linger forever
+      // (a downstream content read would just fail with EISDIR).
+      removed.push(file.path);
+      continue;
+    }
+
+    const unchangedByStat = stats.mtimeMs === file.modifiedAt && stats.size === file.size;
+    const isRacy = Date.now() - stats.mtimeMs < RACY_WINDOW_MS;
+    if (unchangedByStat && !isRacy) {
       continue;
     }
 

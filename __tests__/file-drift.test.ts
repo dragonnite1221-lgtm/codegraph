@@ -44,6 +44,13 @@ function makeTracked(overrides: Partial<FileRecord> & { path: string }): FileRec
   };
 }
 
+/** Push a file's mtime safely outside the racy-detection window for deterministic tests. */
+function backdate(filePath: string, msAgo: number): number {
+  const past = new Date(Date.now() - msAgo);
+  fs.utimesSync(filePath, past, past);
+  return fs.statSync(filePath).mtimeMs;
+}
+
 describe('findDriftedTrackedFiles', () => {
   let rootDir: string;
 
@@ -105,12 +112,15 @@ describe('findDriftedTrackedFiles', () => {
 
   it('leaves an unchanged tracked file out of both lists', () => {
     const content = 'export const value = 1;';
-    fs.writeFileSync(path.join(rootDir, 'stable.ts'), content);
-    const stats = fs.statSync(path.join(rootDir, 'stable.ts'));
+    const filePath = path.join(rootDir, 'stable.ts');
+    fs.writeFileSync(filePath, content);
+    // Push the mtime safely into the past so this doesn't fall inside the
+    // racy-detection window just from how fast the test runs.
+    const mtimeMs = backdate(filePath, 60_000);
 
     const tracked = makeTracked({
       path: 'stable.ts',
-      modifiedAt: stats.mtimeMs,
+      modifiedAt: mtimeMs,
       size: content.length,
     });
 
@@ -118,5 +128,44 @@ describe('findDriftedTrackedFiles', () => {
 
     expect(result.modified).not.toContain('stable.ts');
     expect(result.removed).not.toContain('stable.ts');
+  });
+
+  it('flags a file within the racy window even when mtime/size match exactly', () => {
+    // Simulates the "racy git" case: a checkout or edit that lands within
+    // the filesystem's timestamp resolution can leave a file's mtime/size
+    // looking identical to the DB record despite the content having
+    // changed a moment ago. Anything touched "just now" must not be
+    // trusted from stat() alone.
+    const content = 'export const value = 1;';
+    const filePath = path.join(rootDir, 'racy.ts');
+    fs.writeFileSync(filePath, content);
+    const stats = fs.statSync(filePath);
+
+    const tracked = makeTracked({
+      path: 'racy.ts',
+      modifiedAt: stats.mtimeMs,
+      size: content.length,
+    });
+
+    const result = findDriftedTrackedFiles(rootDir, [tracked]);
+
+    expect(result.modified).toContain('racy.ts');
+  });
+
+  it('treats a tracked path replaced by a directory as removed', () => {
+    // A commit switch can replace a tracked file with a directory of the
+    // same name (e.g. `entry.ts` -> `entry.ts/index.ts`). stat() succeeds,
+    // but it's no longer a regular file -- reading its content would fail
+    // with EISDIR, so it must be reconciled as a removal instead of
+    // lingering as a stale "modified" candidate forever.
+    const dirPath = path.join(rootDir, 'entry.ts');
+    fs.mkdirSync(dirPath);
+
+    const tracked = makeTracked({ path: 'entry.ts', modifiedAt: 1, size: 1 });
+
+    const result = findDriftedTrackedFiles(rootDir, [tracked]);
+
+    expect(result.removed).toContain('entry.ts');
+    expect(result.modified).not.toContain('entry.ts');
   });
 });

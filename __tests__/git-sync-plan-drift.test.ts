@@ -6,22 +6,21 @@
  * --porcelain`, which only diffs the working tree against the CURRENT
  * index/HEAD. It goes clean the instant that diff closes -- even when a
  * tracked file's actual bytes still differ from what's recorded in the DB.
- * Two concrete ways that happens:
+ * Concrete ways that happens:
  *
  *  - An uncommitted edit gets indexed (DB records its hash), then the edit
  *    is reverted with `git checkout -- <file>` / `git restore <file>`.
  *    HEAD never moved, so git status is clean again, but the DB still
  *    holds the hash of the now-gone edit instead of the restored original.
- *  - `git checkout <other-commit>` changes a tracked file's content, and by
- *    the time codegraph looks, the working tree already matches the new
- *    HEAD -- so git status reports nothing, even though the file's content
- *    (and the DB's stale hash for it) no longer match.
+ *  - `git checkout <other-commit>` changes, adds, or removes a tracked
+ *    file, and by the time codegraph looks, the working tree already
+ *    matches the new HEAD -- so git status reports nothing.
  *
- * Both cases leave the graph silently describing content that's no longer
- * on disk. buildGitSyncPlan must fall back to checking tracked files git
- * status didn't flag.
+ * These cases leave the graph silently describing content that's no
+ * longer on disk (or missing content that now exists). buildGitSyncPlan
+ * must fall back to checking tracked files git status didn't flag, and to
+ * reconciling against the full git-visible file set.
  */
-import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -31,29 +30,9 @@ import type { SyncOperationsContext } from '../src/extraction/sync-operations';
 import { hashContent } from '../src/extraction/file-scanner';
 import { DEFAULT_CONFIG } from '../src/types';
 import type { FileRecord } from '../src/types-records';
-import type { QueryBuilder } from '../src/db/queries';
+import { initGit, git, makeFakeQueries } from './helpers/git-sync-test-utils';
 
 const posixIt = process.platform === 'win32' ? it.skip : it;
-
-function initGit(cwd: string): void {
-  git(cwd, 'init', '-q');
-  git(cwd, 'config', 'user.email', 'test@example.com');
-  git(cwd, 'config', 'user.name', 'CodeGraph Test');
-  git(cwd, 'config', 'commit.gpgsign', 'false');
-}
-
-function git(cwd: string, ...args: string[]): void {
-  execFileSync('git', args, { cwd, stdio: 'pipe' });
-}
-
-/** Minimal in-memory QueryBuilder stand-in: just the two methods buildGitSyncPlan reads. */
-function makeFakeQueries(initial: FileRecord[]): QueryBuilder {
-  const files = new Map(initial.map((f) => [f.path, f]));
-  return {
-    getAllFiles: () => [...files.values()],
-    getFileByPath: (p: string) => files.get(p) ?? null,
-  } as unknown as QueryBuilder;
-}
 
 describe('buildGitSyncPlan git-status blind spots', () => {
   let rootDir: string;
