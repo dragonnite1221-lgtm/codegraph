@@ -31,7 +31,12 @@ export interface TrackedFileDrift {
 // "now" instead would make this a no-op in practice: the file watcher's
 // own debounce alone typically exceeds this window before a sync even
 // starts.)
-const RACY_WINDOW_MS = 2000;
+export const RACY_WINDOW_MS = 2000;
+
+/** Was `file`'s DB snapshot captured too close to its own recorded mtime to trust as stable? */
+export function isRacyCapture(file: Pick<FileRecord, 'modifiedAt' | 'indexedAt'>): boolean {
+  return file.indexedAt - file.modifiedAt < RACY_WINDOW_MS;
+}
 
 /**
  * Find tracked files whose actual disk state has drifted from what's
@@ -92,11 +97,10 @@ export function findDriftedTrackedFiles(
     }
 
     const unchangedByStat = stats.mtimeMs === file.modifiedAt && stats.size === file.size;
-    // Was this record's own capture too close to its recorded mtime to
-    // trust as a stable "at rest" snapshot? If so, an exact match here
-    // can't rule out a same-tick edit that happened right after capture.
-    const wasRacyCapture = file.indexedAt - file.modifiedAt < RACY_WINDOW_MS;
-    if (unchangedByStat && !wasRacyCapture) {
+    // An exact stat match can't rule out a same-tick edit right after
+    // capture when the record's own capture was itself racy (see
+    // isRacyCapture) -- still flag it so the caller re-verifies by hash.
+    if (unchangedByStat && !isRacyCapture(file)) {
       continue;
     }
 

@@ -87,6 +87,52 @@ describe('buildGitSyncPlan drift refresh', () => {
     expect(refreshed.modifiedAt).not.toBe(0);
   });
 
+  posixIt('promotes a racily-captured record out of racy status once hash-verified', () => {
+    // A file indexed within RACY_WINDOW_MS of its own recorded mtime -- the
+    // common case for a watcher-triggered sync that indexes a file right
+    // after it's written. Stat matches exactly (nothing has touched the
+    // file since), so without bumping indexedAt on a verified-unchanged
+    // hash, this record would never stop looking racy and would get
+    // rehashed on literally every future sync forever.
+    const filePath = 'fresh.ts';
+    const content = 'export const fresh = 1;';
+
+    fs.writeFileSync(path.join(rootDir, filePath), content);
+    git(rootDir, 'add', filePath);
+    git(rootDir, 'commit', '-qm', 'initial');
+    const mtimeMs = fs.statSync(path.join(rootDir, filePath)).mtimeMs;
+
+    const racyTracked: FileRecord = {
+      path: filePath,
+      contentHash: hashContent(content),
+      language: 'typescript',
+      size: content.length,
+      modifiedAt: mtimeMs,
+      indexedAt: mtimeMs + 1, // captured 1ms after its own mtime -- racy
+      nodeCount: 0,
+    };
+
+    const queries = makeFakeQueries([racyTracked]);
+    const context: SyncOperationsContext = {
+      rootDir,
+      config: { ...DEFAULT_CONFIG, rootDir, exclude: [] },
+      queries,
+      indexFile: async () => {
+        throw new Error('not used in this test');
+      },
+    };
+
+    const plan = buildGitSyncPlan(context);
+
+    expect(plan?.modified).not.toContain(filePath);
+    expect(plan?.staleMetadataRefresh).toHaveLength(1);
+    const refreshed = plan!.staleMetadataRefresh[0]!;
+    expect(refreshed.path).toBe(filePath);
+    // indexedAt must move forward from the original racy capture, even
+    // though mtime/size themselves didn't change.
+    expect(refreshed.indexedAt).toBeGreaterThan(racyTracked.indexedAt);
+  });
+
   posixIt('runSync applies the metadata refresh (the read-only plan does not)', async () => {
     const filePath = 'touched.ts';
     const content = 'export const touched = 1;';

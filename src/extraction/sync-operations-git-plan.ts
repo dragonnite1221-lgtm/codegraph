@@ -5,26 +5,31 @@
 
 import type { FileRecord } from '../types';
 import { getGitChangedFiles, getGitVisibleFiles, shouldIncludeFile } from './file-scanner';
-import { findDriftedTrackedFiles } from './file-drift';
+import { findDriftedTrackedFiles, isRacyCapture } from './file-drift';
 import { readContentHashWithStats, isPathWithinRoot } from './sync-file-checks';
 import type { SyncOperationsContext, SyncPlan } from './sync-operations';
 
 /**
- * Build a refreshed FileRecord for a tracked file whose stat bookkeeping
- * drifted (mtime/size, or a racy-window re-check) but whose content hash
- * -- read from the exact same snapshot as the stats used here -- confirms
- * nothing actually changed. Without this, the same file would keep
- * getting re-flagged and re-hashed by every future sync.
+ * Build a refreshed FileRecord for a tracked file whose content hash --
+ * read from the exact same snapshot as `stats` -- confirms nothing
+ * actually changed, even though the drift sweep flagged it (mtime/size
+ * drift, or a racy-window re-check).
  *
- * `indexedAt` is bumped to now alongside `modifiedAt` so the racy-window
- * math in findDriftedTrackedFiles stays meaningful: once real time has
- * passed since this refreshed capture without the file changing again,
- * the record naturally stops looking racy on its own.
+ * Always bumps `indexedAt` to now, even when mtime/size didn't change:
+ * this is what lets a racily-captured record (isRacyCapture) graduate out
+ * of racy status once it's been positively re-verified by hash. Without
+ * that, a file indexed within RACY_WINDOW_MS of being written -- the
+ * common case for a watcher-triggered sync -- would stay racy forever
+ * (mtime/size never differing means this function would never otherwise
+ * touch it), so every future sync would keep re-hashing it needlessly.
+ * Returns null only when there's truly nothing to update: stat matches
+ * AND the record is already trusted.
  *
  * Returned rather than written here -- see SyncPlan.staleMetadataRefresh.
  */
 function buildRefreshedRecord(tracked: FileRecord, stats: { mtimeMs: number; size: number }): FileRecord | null {
-  if (stats.mtimeMs === tracked.modifiedAt && stats.size === tracked.size) return null;
+  const statMatches = stats.mtimeMs === tracked.modifiedAt && stats.size === tracked.size;
+  if (statMatches && !isRacyCapture(tracked)) return null;
   return { ...tracked, modifiedAt: stats.mtimeMs, size: stats.size, indexedAt: Date.now() };
 }
 
