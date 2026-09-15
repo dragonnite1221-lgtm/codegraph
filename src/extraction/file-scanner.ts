@@ -1,13 +1,10 @@
 import { execFileSync } from 'child_process';
 import * as crypto from 'crypto';
-import * as fs from 'fs';
 import * as path from 'path';
 import picomatch from 'picomatch';
 
 import type { CodeGraphConfig } from '../types';
-import type { FileRecord } from '../types-records';
 import { normalizePath } from '../utils';
-import { validatePathWithinRoot } from '../path-security';
 
 /**
  * Calculate SHA256 hash of file contents.
@@ -159,59 +156,5 @@ export function getGitChangedFiles(
   }
 }
 
-/**
- * Reconciliation result for tracked files that `git status` didn't flag.
- */
-export interface TrackedFileDrift {
-  /** Tracked files whose on-disk mtime no longer matches the DB record. */
-  modified: string[];
-  /** Tracked files that no longer exist (or resolve) on disk. */
-  removed: string[];
-}
-
-/**
- * Find tracked files whose actual disk state has drifted from what's
- * recorded in the DB, even though `git status` reports nothing for them.
- *
- * `getGitChangedFiles` only diffs the working tree against the CURRENT
- * index/HEAD, so it goes silent the moment that diff closes -- regardless
- * of whether the file's content still matches what codegraph last indexed.
- * That happens whenever HEAD-relative status becomes clean without the
- * file returning to the exact version the DB has on record: an
- * uncommitted edit that was indexed, then reverted with
- * `git checkout -- <file>` / `git restore <file>` (HEAD never moves); or a
- * `git checkout <other-commit>` that changes (or deletes) a tracked file
- * and already matches the new HEAD by the time codegraph looks.
- *
- * This is a cheap `stat()` sweep, not a content read -- callers still
- * verify with a full content hash before treating a file as changed, so a
- * touched-but-unchanged mtime causes no false positive.
- */
-export function findDriftedTrackedFiles(
-  rootDir: string,
-  trackedFiles: Array<Pick<FileRecord, 'path' | 'modifiedAt'>>
-): TrackedFileDrift {
-  const modified: string[] = [];
-  const removed: string[] = [];
-
-  for (const file of trackedFiles) {
-    const fullPath = validatePathWithinRoot(rootDir, file.path);
-    if (!fullPath) {
-      removed.push(file.path);
-      continue;
-    }
-
-    try {
-      const stats = fs.statSync(fullPath);
-      if (stats.mtimeMs !== file.modifiedAt) {
-        modified.push(file.path);
-      }
-    } catch {
-      removed.push(file.path);
-    }
-  }
-
-  return { modified, removed };
-}
 
 export { scanDirectory, scanDirectoryAsync } from './file-scanner-scan';

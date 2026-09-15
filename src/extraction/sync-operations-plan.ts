@@ -7,7 +7,8 @@ import * as fs from 'fs';
 import type { FileRecord } from '../types';
 import { logDebug, logWarn } from '../errors';
 import { validatePathWithinRoot } from '../utils';
-import { findDriftedTrackedFiles, getGitChangedFiles, hashContent, scanDirectory } from './file-scanner';
+import { getGitChangedFiles, getGitVisibleFiles, hashContent, scanDirectory, shouldIncludeFile } from './file-scanner';
+import { findDriftedTrackedFiles } from './file-drift';
 import type { SyncOperationsContext, SyncPlan } from './sync-operations';
 
 export function addCppHeaderGrammarIfNeeded(languages: string[]): void {
@@ -51,6 +52,10 @@ export function buildGitSyncPlan(context: SyncOperationsContext): SyncPlan | nul
   const modified: string[] = [];
   const removed: string[] = [];
 
+  const trackedFiles = context.queries.getAllFiles();
+  const trackedPaths = new Set(trackedFiles.map((f) => f.path));
+  const gitFlagged = new Set([...gitChanges.modified, ...gitChanges.added, ...gitChanges.deleted]);
+
   // `git status` only diffs the working tree against the CURRENT
   // index/HEAD, so it stays silent about a tracked file whose content
   // still differs from the DB's last-indexed record once that diff closes
@@ -58,12 +63,29 @@ export function buildGitSyncPlan(context: SyncOperationsContext): SyncPlan | nul
   // with `git checkout -- <file>` / `git restore <file>` (HEAD never
   // moved), or a `git checkout <other-commit>` that already matches the
   // new HEAD by the time codegraph looks. Sweep tracked files git status
-  // didn't flag for a drifted mtime (or disappearance) so those cases
-  // aren't silently missed; the hash checks below still gate whether a
-  // drifted file actually gets reindexed.
-  const gitFlagged = new Set([...gitChanges.modified, ...gitChanges.added, ...gitChanges.deleted]);
-  const unflaggedTracked = context.queries.getAllFiles().filter((f) => !gitFlagged.has(f.path));
+  // didn't flag (respecting the current include/exclude config, same as
+  // every other candidate) for a drifted mtime/size or disappearance; the
+  // hash checks below still gate whether a drifted file actually gets
+  // reindexed.
+  const unflaggedTracked = trackedFiles.filter(
+    (f) => !gitFlagged.has(f.path) && shouldIncludeFile(f.path, context.config)
+  );
   const drift = findDriftedTrackedFiles(context.rootDir, unflaggedTracked);
+
+  // A commit switch can also introduce a file that's brand new to the DB
+  // -- it's part of git's tracked tree the moment `git checkout` finishes,
+  // so it never shows up as `??` in `git status`. Reconcile against the
+  // full git-visible set (cheap -- `git ls-files`, no content reads) to
+  // catch those too.
+  const gitVisible = getGitVisibleFiles(context.rootDir);
+  const newlyVisible: string[] = [];
+  if (gitVisible) {
+    for (const filePath of gitVisible) {
+      if (trackedPaths.has(filePath) || gitFlagged.has(filePath)) continue;
+      if (!shouldIncludeFile(filePath, context.config)) continue;
+      newlyVisible.push(filePath);
+    }
+  }
 
   // Deleted files — only report/delete if tracked in DB
   for (const filePath of [...gitChanges.deleted, ...drift.removed]) {
@@ -86,9 +108,10 @@ export function buildGitSyncPlan(context: SyncOperationsContext): SyncPlan | nul
     }
   }
 
-  // Added (untracked) files. indexFile has its own traversal gate too, but
-  // validating here keeps sync bookkeeping consistent with modified/deleted paths.
-  for (const filePath of gitChanges.added) {
+  // Added (untracked-by-DB) files. indexFile has its own traversal gate
+  // too, but validating here keeps sync bookkeeping consistent with
+  // modified/deleted paths.
+  for (const filePath of [...gitChanges.added, ...newlyVisible]) {
     if (isPathWithinRoot(context.rootDir, filePath)) {
       added.push(filePath);
     }
@@ -101,7 +124,8 @@ export function buildGitSyncPlan(context: SyncOperationsContext): SyncPlan | nul
       gitChanges.added.length +
       gitChanges.deleted.length +
       drift.modified.length +
-      drift.removed.length,
+      drift.removed.length +
+      newlyVisible.length,
     added,
     modified,
     removed,

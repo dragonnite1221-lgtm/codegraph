@@ -110,4 +110,81 @@ describe('buildGitSyncPlan git-status blind spots', () => {
     // DB's stale hash (of `edited`) -- it must be queued for reindexing.
     expect(plan?.modified).toContain(filePath);
   });
+
+  posixIt('adds a file introduced by switching to a different commit', () => {
+    fs.writeFileSync(path.join(rootDir, 'a.ts'), 'export const a = 1;');
+    git(rootDir, 'add', 'a.ts');
+    git(rootDir, 'commit', '-qm', 'commit 1');
+
+    // A second commit adds a brand-new file. `git checkout` back to it makes
+    // that file part of git's tracked tree instantly -- `git status` never
+    // reports it as `??` (untracked) because it was never untracked.
+    fs.writeFileSync(path.join(rootDir, 'b.ts'), 'export const b = 2;');
+    git(rootDir, 'add', 'b.ts');
+    git(rootDir, 'commit', '-qm', 'commit 2 adds b.ts');
+
+    git(rootDir, 'checkout', '-q', 'HEAD~1');
+    expect(fs.existsSync(path.join(rootDir, 'b.ts'))).toBe(false);
+    git(rootDir, 'checkout', '-q', '-');
+    expect(fs.existsSync(path.join(rootDir, 'b.ts'))).toBe(true);
+
+    const tracked: FileRecord = {
+      path: 'a.ts',
+      contentHash: hashContent('export const a = 1;'),
+      language: 'typescript',
+      size: 'export const a = 1;'.length,
+      modifiedAt: fs.statSync(path.join(rootDir, 'a.ts')).mtimeMs,
+      indexedAt: Date.now(),
+      nodeCount: 0,
+    };
+
+    const context: SyncOperationsContext = {
+      rootDir,
+      config: { ...DEFAULT_CONFIG, rootDir, exclude: [] },
+      queries: makeFakeQueries([tracked]),
+      indexFile: async () => {
+        throw new Error('not used in this test');
+      },
+    };
+
+    const plan = buildGitSyncPlan(context);
+
+    expect(plan?.added).toContain('b.ts');
+  });
+
+  posixIt('removes a tracked file deleted by switching to a different commit', () => {
+    fs.writeFileSync(path.join(rootDir, 'a.ts'), 'export const a = 1;');
+    fs.writeFileSync(path.join(rootDir, 'gone.ts'), 'export const gone = 1;');
+    git(rootDir, 'add', 'a.ts', 'gone.ts');
+    git(rootDir, 'commit', '-qm', 'commit 1');
+
+    git(rootDir, 'rm', '-q', 'gone.ts');
+    git(rootDir, 'commit', '-qm', 'commit 2 removes gone.ts');
+
+    const tracked: FileRecord = {
+      path: 'gone.ts',
+      contentHash: hashContent('export const gone = 1;'),
+      language: 'typescript',
+      size: 'export const gone = 1;'.length,
+      // The file no longer exists on disk after the second commit -- this
+      // mtime is stale by construction, same as it would be in a real DB
+      // record from before the checkout.
+      modifiedAt: 0,
+      indexedAt: Date.now(),
+      nodeCount: 0,
+    };
+
+    const context: SyncOperationsContext = {
+      rootDir,
+      config: { ...DEFAULT_CONFIG, rootDir, exclude: [] },
+      queries: makeFakeQueries([tracked]),
+      indexFile: async () => {
+        throw new Error('not used in this test');
+      },
+    };
+
+    const plan = buildGitSyncPlan(context);
+
+    expect(plan?.removed).toContain('gone.ts');
+  });
 });
