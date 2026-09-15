@@ -136,13 +136,17 @@ export async function resolveAndPersistBatched(
   // Process in batches. We always read from offset 0 because resolved refs
   // are deleted after each batch, shifting the remaining rows forward.
   while (true) {
-    const batch = resolver.queries.getUnresolvedReferencesBatch(0, batchSize);
+    // Row ids and ref data come from ONE query (getBatchWithIds), not two
+    // separate SELECTs -- a second SELECT just for ids would leave a gap
+    // for another connection/process to delete+reinsert a row in between,
+    // silently swapping in a replacement row's id before this batch's
+    // identity is even captured.
+    const { rows: batch, ids: batchIds } = resolver.queries.getUnresolvedReferencesBatchWithIds(0, batchSize);
     if (batch.length === 0) break;
 
-    // Identify this batch by its actual row ids (fetched back to back with
-    // the batch itself -- both synchronous, so nothing can interleave), not
-    // by field values or the table's total row count. resolveReferencesBatched()
-    // isn't lock-protected against a concurrent indexing pass, which could:
+    // Identify this batch by its actual row ids, not by field values or
+    // the table's total row count. resolveReferencesBatched() isn't
+    // lock-protected against a concurrent indexing pass, which could:
     // (a) reinsert a *content-identical* reference (same fromNodeId/name/
     // kind/line/column but a different row) -- indistinguishable from the
     // just-processed row by field values alone, but never by id; or
@@ -150,7 +154,7 @@ export async function resolveAndPersistBatched(
     // A concurrent writer's inserts always get a larger id and so always
     // sort after this batch, never into it, so id identity is unaffected
     // by activity elsewhere in the table.
-    const batchKey = JSON.stringify(resolver.queries.getUnresolvedReferencesBatchIds(0, batchSize));
+    const batchKey = JSON.stringify(batchIds);
 
     const result = resolveAll(resolver, batch);
 

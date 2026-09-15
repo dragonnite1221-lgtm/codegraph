@@ -26,7 +26,6 @@ export class UnresolvedReferenceQueries {
     getByName?: SqliteStatement;
     count?: SqliteStatement;
     batch?: SqliteStatement;
-    batchIds?: SqliteStatement;
   } = {};
 
   constructor(
@@ -98,18 +97,20 @@ export class UnresolvedReferenceQueries {
   }
 
   getBatch(offset: number, limit: number): UnresolvedReference[] {
+    return this.fetchBatchRows(offset, limit).map(rowToUnresolvedReference);
+  }
+
+  /** Batch rows + their row ids from ONE query -- lets the resolver detect a stall by row identity without a second SELECT racing a concurrent writer. */
+  getBatchWithIds(offset: number, limit: number): { rows: UnresolvedReference[]; ids: number[] } {
+    const rawRows = this.fetchBatchRows(offset, limit);
+    return { rows: rawRows.map(rowToUnresolvedReference), ids: rawRows.map((r) => r.id) };
+  }
+
+  private fetchBatchRows(offset: number, limit: number): UnresolvedRefRow[] {
     if (!this.stmts.batch) {
       this.stmts.batch = this.db.prepare('SELECT * FROM unresolved_refs ORDER BY id LIMIT ? OFFSET ?');
     }
-    return (this.stmts.batch.all(limit, offset) as UnresolvedRefRow[]).map(rowToUnresolvedReference);
-  }
-
-  /** Row ids for a batch (same order as getBatch) -- lets the batched resolver detect a stall by row identity, not field values. */
-  getBatchIds(offset: number, limit: number): number[] {
-    if (!this.stmts.batchIds) {
-      this.stmts.batchIds = this.db.prepare('SELECT id FROM unresolved_refs ORDER BY id LIMIT ? OFFSET ?');
-    }
-    return (this.stmts.batchIds.all(limit, offset) as Array<{ id: number }>).map((r) => r.id);
+    return this.stmts.batch.all(limit, offset) as UnresolvedRefRow[];
   }
 
   getByFiles(filePaths: string[]): UnresolvedReference[] {
