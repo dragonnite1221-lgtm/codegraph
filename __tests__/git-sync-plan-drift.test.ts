@@ -1,0 +1,169 @@
+/**
+ * Regression: buildGitSyncPlan must not rely on `git status` alone to decide
+ * which tracked files changed.
+ *
+ * `getGitChangedFiles` (file-scanner.ts) shells out to `git status
+ * --porcelain`, which only diffs the working tree against the CURRENT
+ * index/HEAD. It goes clean the instant that diff closes -- even when a
+ * tracked file's actual bytes still differ from what's recorded in the DB.
+ * Concrete ways that happens:
+ *
+ *  - An uncommitted edit gets indexed (DB records its hash), then the edit
+ *    is reverted with `git checkout -- <file>` / `git restore <file>`.
+ *    HEAD never moved, so git status is clean again, but the DB still
+ *    holds the hash of the now-gone edit instead of the restored original.
+ *  - `git checkout <other-commit>` changes, adds, or removes a tracked
+ *    file, and by the time codegraph looks, the working tree already
+ *    matches the new HEAD -- so git status reports nothing.
+ *
+ * These cases leave the graph silently describing content that's no
+ * longer on disk (or missing content that now exists). buildGitSyncPlan
+ * must fall back to checking tracked files git status didn't flag, and to
+ * reconciling against the full git-visible file set.
+ */
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { buildGitSyncPlan } from '../src/extraction/sync-operations-plan';
+import type { SyncOperationsContext } from '../src/extraction/sync-operations';
+import { hashContent } from '../src/extraction/file-scanner';
+import { DEFAULT_CONFIG } from '../src/types';
+import type { FileRecord } from '../src/types-records';
+import { initGit, git, makeFakeQueries } from './helpers/git-sync-test-utils';
+
+const posixIt = process.platform === 'win32' ? it.skip : it;
+
+describe('buildGitSyncPlan git-status blind spots', () => {
+  let rootDir: string;
+
+  beforeEach(() => {
+    rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-drift-'));
+    initGit(rootDir);
+  });
+
+  afterEach(() => {
+    fs.rmSync(rootDir, { force: true, recursive: true });
+  });
+
+  posixIt('detects a tracked file reverted to its original content with `git checkout --`', () => {
+    const filePath = 'a.ts';
+    const original = 'export const a = 1;';
+    const edited = 'export const a = 2;';
+
+    fs.writeFileSync(path.join(rootDir, filePath), original);
+    git(rootDir, 'add', filePath);
+    git(rootDir, 'commit', '-qm', 'initial');
+
+    // Simulate a prior sync that indexed the (still uncommitted-at-the-time)
+    // edit: the DB now holds the edited content's hash/mtime.
+    fs.writeFileSync(path.join(rootDir, filePath), edited);
+    const editedMtime = fs.statSync(path.join(rootDir, filePath)).mtimeMs;
+    const tracked: FileRecord = {
+      path: filePath,
+      contentHash: hashContent(edited),
+      language: 'typescript',
+      size: edited.length,
+      modifiedAt: editedMtime,
+      indexedAt: Date.now(),
+      nodeCount: 0,
+    };
+
+    // Revert the uncommitted edit back to the last commit. HEAD never
+    // moves, so `git status` is clean again.
+    git(rootDir, 'checkout', '--', filePath);
+    expect(fs.readFileSync(path.join(rootDir, filePath), 'utf-8')).toBe(original);
+
+    const context: SyncOperationsContext = {
+      rootDir,
+      config: { ...DEFAULT_CONFIG, rootDir, exclude: [] },
+      queries: makeFakeQueries([tracked]),
+      indexFile: async () => {
+        throw new Error('not used in this test');
+      },
+    };
+
+    const plan = buildGitSyncPlan(context);
+
+    // The restored file's real content (`original`) no longer matches the
+    // DB's stale hash (of `edited`) -- it must be queued for reindexing.
+    expect(plan?.modified).toContain(filePath);
+  });
+
+  posixIt('adds a file introduced by switching to a different commit', () => {
+    fs.writeFileSync(path.join(rootDir, 'a.ts'), 'export const a = 1;');
+    git(rootDir, 'add', 'a.ts');
+    git(rootDir, 'commit', '-qm', 'commit 1');
+
+    // A second commit adds a brand-new file. `git checkout` back to it makes
+    // that file part of git's tracked tree instantly -- `git status` never
+    // reports it as `??` (untracked) because it was never untracked.
+    fs.writeFileSync(path.join(rootDir, 'b.ts'), 'export const b = 2;');
+    git(rootDir, 'add', 'b.ts');
+    git(rootDir, 'commit', '-qm', 'commit 2 adds b.ts');
+
+    git(rootDir, 'checkout', '-q', 'HEAD~1');
+    expect(fs.existsSync(path.join(rootDir, 'b.ts'))).toBe(false);
+    git(rootDir, 'checkout', '-q', '-');
+    expect(fs.existsSync(path.join(rootDir, 'b.ts'))).toBe(true);
+
+    const tracked: FileRecord = {
+      path: 'a.ts',
+      contentHash: hashContent('export const a = 1;'),
+      language: 'typescript',
+      size: 'export const a = 1;'.length,
+      modifiedAt: fs.statSync(path.join(rootDir, 'a.ts')).mtimeMs,
+      indexedAt: Date.now(),
+      nodeCount: 0,
+    };
+
+    const context: SyncOperationsContext = {
+      rootDir,
+      config: { ...DEFAULT_CONFIG, rootDir, exclude: [] },
+      queries: makeFakeQueries([tracked]),
+      indexFile: async () => {
+        throw new Error('not used in this test');
+      },
+    };
+
+    const plan = buildGitSyncPlan(context);
+
+    expect(plan?.added).toContain('b.ts');
+  });
+
+  posixIt('removes a tracked file deleted by switching to a different commit', () => {
+    fs.writeFileSync(path.join(rootDir, 'a.ts'), 'export const a = 1;');
+    fs.writeFileSync(path.join(rootDir, 'gone.ts'), 'export const gone = 1;');
+    git(rootDir, 'add', 'a.ts', 'gone.ts');
+    git(rootDir, 'commit', '-qm', 'commit 1');
+
+    git(rootDir, 'rm', '-q', 'gone.ts');
+    git(rootDir, 'commit', '-qm', 'commit 2 removes gone.ts');
+
+    const tracked: FileRecord = {
+      path: 'gone.ts',
+      contentHash: hashContent('export const gone = 1;'),
+      language: 'typescript',
+      size: 'export const gone = 1;'.length,
+      // The file no longer exists on disk after the second commit -- this
+      // mtime is stale by construction, same as it would be in a real DB
+      // record from before the checkout.
+      modifiedAt: 0,
+      indexedAt: Date.now(),
+      nodeCount: 0,
+    };
+
+    const context: SyncOperationsContext = {
+      rootDir,
+      config: { ...DEFAULT_CONFIG, rootDir, exclude: [] },
+      queries: makeFakeQueries([tracked]),
+      indexFile: async () => {
+        throw new Error('not used in this test');
+      },
+    };
+
+    const plan = buildGitSyncPlan(context);
+
+    expect(plan?.removed).toContain('gone.ts');
+  });
+});

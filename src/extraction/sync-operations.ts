@@ -6,7 +6,7 @@
  * transitions.
  */
 
-import type { CodeGraphConfig, ExtractionResult } from '../types';
+import type { CodeGraphConfig, ExtractionResult, FileRecord } from '../types';
 import type { QueryBuilder } from '../db/queries';
 import { detectLanguage, initGrammars, loadGrammarsForLanguages } from './grammars';
 import type { IndexProgress, SyncResult } from './index';
@@ -26,6 +26,15 @@ export interface SyncPlan {
   removed: string[];
   filesToIndex: string[];
   changedFilePaths: string[];
+  /**
+   * Tracked files whose stat bookkeeping (mtime/size) drifted but whose
+   * content hash confirmed nothing actually changed. Applying these is a
+   * DB write, so only `runSync` (which runs under the indexing mutex/file
+   * lock) applies them -- the read-only `getChangedFilesForIndex` path
+   * must stay side-effect-free, since it isn't lock-protected and could
+   * race a concurrent sync.
+   */
+  staleMetadataRefresh: FileRecord[];
 }
 
 export async function runSync(
@@ -45,6 +54,12 @@ export async function runSync(
 
   for (const filePath of plan.removed) {
     context.queries.deleteFile(filePath);
+  }
+
+  // Safe to write here: runSync only ever executes under the caller's
+  // indexing mutex/file lock (see indexing-operations.ts's runSync).
+  for (const record of plan.staleMetadataRefresh) {
+    context.queries.upsertFile(record);
   }
 
   // Load only grammars needed for changed files
