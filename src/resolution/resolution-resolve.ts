@@ -112,6 +112,11 @@ export function resolveAndPersist(
   return result;
 }
 
+/** Stable identity for a fetched batch, used to detect a genuine stall below. */
+function batchIdentity(batch: UnresolvedReference[]): string {
+  return JSON.stringify(batch.map((r) => [r.fromNodeId, r.referenceName, r.referenceKind, r.line, r.column]));
+}
+
 /**
  * Resolve and persist in batches to keep memory bounded. Persists edges and
  * prunes resolved + unresolvable refs after each batch.
@@ -125,7 +130,7 @@ export async function resolveAndPersistBatched(
 
   const total = resolver.queries.getUnresolvedReferencesCount();
   let processed = 0;
-  let remainingBefore = total;
+  let previousBatchKey: string | null = null;
   const aggregateStats = {
     total: 0,
     resolved: 0,
@@ -138,6 +143,16 @@ export async function resolveAndPersistBatched(
   while (true) {
     const batch = resolver.queries.getUnresolvedReferencesBatch(0, batchSize);
     if (batch.length === 0) break;
+
+    // Identify this batch by its own rows (fetched in stable `id` order),
+    // not the table's total row count -- resolveReferencesBatched() isn't
+    // lock-protected against a concurrent indexing pass inserting new
+    // unresolved refs, which could inflate the total count and mask a
+    // genuine stall, or shrink it and produce a false one. New rows from a
+    // concurrent writer always get a larger id and so always sort after
+    // this batch, never into it, so this identity is unaffected by
+    // concurrent activity elsewhere in the table.
+    const batchKey = batchIdentity(batch);
 
     const result = resolveAll(resolver, batch);
 
@@ -162,24 +177,21 @@ export async function resolveAndPersistBatched(
     processed += batch.length;
     onProgress?.(processed, total);
 
-    // Yield so progress UI can render between batches
-    await new Promise(resolve => setImmediate(resolve));
-
-    // Safety net against an infinite loop: every ref in this batch was
-    // deleted above (resolved refs via result.resolved, everything else via
-    // result.unresolved), so the unresolved_refs table should always shrink
-    // by at least a full batch. Only bail here if that invariant somehow
-    // didn't hold -- i.e. the row count genuinely failed to decrease.
-    // A batch resolving *zero* references is not itself a stall signal:
-    // its refs are still removed from the table, and later batches (whose
-    // rows were never touched) may still resolve fine once, e.g., other
-    // files finish indexing -- so a single all-fail batch must not abort
-    // the batches queued behind it.
-    const remainingAfter = resolver.queries.getUnresolvedReferencesCount();
-    if (remainingAfter >= remainingBefore) {
+    // Safety net against an infinite loop: every ref in this batch was just
+    // deleted above (as resolved or as unresolved), so the same batch must
+    // not reappear next iteration -- if it does, the delete had no effect.
+    // A batch resolving *zero* references is NOT itself a stall: its refs
+    // are still removed, and later (untouched) batches may resolve fine
+    // once e.g. other files finish indexing, so one all-fail batch must
+    // not abort the batches behind it. Measured before the yield below so
+    // a concurrent writer can't influence this comparison.
+    if (batchKey === previousBatchKey) {
       break;
     }
-    remainingBefore = remainingAfter;
+    previousBatchKey = batchKey;
+
+    // Yield so progress UI can render between batches
+    await new Promise(resolve => setImmediate(resolve));
   }
 
   return { resolved: [], unresolved: [], stats: aggregateStats };
