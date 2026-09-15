@@ -32,3 +32,40 @@ export function isPathWithinRoot(rootDir: string, filePath: string): boolean {
   }
   return true;
 }
+
+/**
+ * Hash + stat a file from a single open file descriptor, so the two are
+ * guaranteed to describe the exact same snapshot of the file's bytes.
+ * Reading the content and stat()-ing the path separately (even back to
+ * back) leaves a window where a concurrent write lands in between, which
+ * would pair an old content hash with a newer mtime/size in the DB.
+ */
+export function readContentHashWithStats(
+  rootDir: string,
+  filePath: string
+): { hash: string; stats: fs.Stats } | null {
+  const fullPath = validatePathWithinRoot(rootDir, filePath);
+  if (!fullPath) {
+    logWarn('Path traversal blocked while detecting changes', { filePath });
+    return null;
+  }
+
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(fullPath, 'r');
+    const stats = fs.fstatSync(fd);
+    const content = fs.readFileSync(fd, 'utf-8');
+    return { hash: hashContent(content), stats };
+  } catch (error) {
+    logDebug('Skipping unreadable file during sync', { filePath, error: String(error) });
+    return null;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // Already closed or invalid -- nothing more we can do.
+      }
+    }
+  }
+}

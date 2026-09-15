@@ -122,6 +122,9 @@ describe('findDriftedTrackedFiles', () => {
       path: 'stable.ts',
       modifiedAt: mtimeMs,
       size: content.length,
+      // Captured well after the file's last real write -- not a racy
+      // snapshot, so an exact stat match here should be trusted.
+      indexedAt: mtimeMs + 60_000,
     });
 
     const result = findDriftedTrackedFiles(rootDir, [tracked]);
@@ -134,8 +137,10 @@ describe('findDriftedTrackedFiles', () => {
     // Simulates the "racy git" case: a checkout or edit that lands within
     // the filesystem's timestamp resolution can leave a file's mtime/size
     // looking identical to the DB record despite the content having
-    // changed a moment ago. Anything touched "just now" must not be
-    // trusted from stat() alone.
+    // changed again right after the DB snapshot was captured. A record
+    // whose indexedAt is suspiciously close to its own recorded mtime can
+    // never be trusted from stat() alone, no matter how long ago the
+    // *check* itself runs.
     const content = 'export const value = 1;';
     const filePath = path.join(rootDir, 'racy.ts');
     fs.writeFileSync(filePath, content);
@@ -145,6 +150,9 @@ describe('findDriftedTrackedFiles', () => {
       path: 'racy.ts',
       modifiedAt: stats.mtimeMs,
       size: content.length,
+      // Captured (indexedAt) essentially at the same instant as the
+      // recorded mtime -- exactly the ambiguous case.
+      indexedAt: stats.mtimeMs + 1,
     });
 
     const result = findDriftedTrackedFiles(rootDir, [tracked]);

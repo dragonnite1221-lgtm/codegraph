@@ -61,6 +61,10 @@ export function buildFullScanSyncPlan(context: SyncOperationsContext): SyncPlan 
     removed,
     filesToIndex,
     changedFilePaths: filesToIndex,
+    // The full scan already reads + hashes every current file to decide
+    // added/modified, so there's no separate "looked drifted but wasn't"
+    // case here needing a metadata-only refresh.
+    staleMetadataRefresh: [],
   };
 }
 

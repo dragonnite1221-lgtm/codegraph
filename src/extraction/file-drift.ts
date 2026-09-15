@@ -21,10 +21,16 @@ export interface TrackedFileDrift {
 }
 
 // Filesystem mtime resolution (some filesystems only tick every 1-2s) plus
-// clock skew means a file touched "just now" can report the same mtime/size
-// it had a moment ago -- the classic "racy git" problem. Anything modified
-// within this window is treated as unverifiable from stat() alone and gets
-// flagged for a real hash check rather than trusted at face value.
+// clock skew means two writes landing in the same coarse tick can report
+// identical mtimes -- the classic "racy git" problem. The ambiguity has to
+// be judged against *when the DB snapshot was captured*, not against how
+// long ago the check itself is running: a record indexed within
+// RACY_WINDOW_MS of its own recorded mtime could have been snapshotted
+// mid-edit, so an exact stat match against it is never trustworthy on its
+// own, no matter how much time has passed since. (Comparing against
+// "now" instead would make this a no-op in practice: the file watcher's
+// own debounce alone typically exceeds this window before a sync even
+// starts.)
 const RACY_WINDOW_MS = 2000;
 
 /**
@@ -53,7 +59,7 @@ const RACY_WINDOW_MS = 2000;
  */
 export function findDriftedTrackedFiles(
   rootDir: string,
-  trackedFiles: Array<Pick<FileRecord, 'path' | 'modifiedAt' | 'size'>>
+  trackedFiles: Array<Pick<FileRecord, 'path' | 'modifiedAt' | 'size' | 'indexedAt'>>
 ): TrackedFileDrift {
   const modified: string[] = [];
   const removed: string[] = [];
@@ -86,8 +92,11 @@ export function findDriftedTrackedFiles(
     }
 
     const unchangedByStat = stats.mtimeMs === file.modifiedAt && stats.size === file.size;
-    const isRacy = Date.now() - stats.mtimeMs < RACY_WINDOW_MS;
-    if (unchangedByStat && !isRacy) {
+    // Was this record's own capture too close to its recorded mtime to
+    // trust as a stable "at rest" snapshot? If so, an exact match here
+    // can't rule out a same-tick edit that happened right after capture.
+    const wasRacyCapture = file.indexedAt - file.modifiedAt < RACY_WINDOW_MS;
+    if (unchangedByStat && !wasRacyCapture) {
       continue;
     }
 

@@ -3,32 +3,29 @@
  * sync-operations-plan.ts to stay within the file-size gate.
  */
 
-import * as fs from 'fs';
 import type { FileRecord } from '../types';
-import { validatePathWithinRoot } from '../utils';
 import { getGitChangedFiles, getGitVisibleFiles, shouldIncludeFile } from './file-scanner';
 import { findDriftedTrackedFiles } from './file-drift';
-import { readContentHash, isPathWithinRoot } from './sync-file-checks';
+import { readContentHashWithStats, isPathWithinRoot } from './sync-file-checks';
 import type { SyncOperationsContext, SyncPlan } from './sync-operations';
 
 /**
- * Refresh a tracked file's stat bookkeeping (mtime/size) without touching
- * its content hash or graph data. Used when the drift sweep flags a file
- * (stat looked different, or landed inside the racy window) but a real
- * content hash shows it's actually unchanged -- without this, the same
- * file would keep getting re-flagged and re-hashed on every future sync.
+ * Build a refreshed FileRecord for a tracked file whose stat bookkeeping
+ * drifted (mtime/size, or a racy-window re-check) but whose content hash
+ * -- read from the exact same snapshot as the stats used here -- confirms
+ * nothing actually changed. Without this, the same file would keep
+ * getting re-flagged and re-hashed by every future sync.
+ *
+ * `indexedAt` is bumped to now alongside `modifiedAt` so the racy-window
+ * math in findDriftedTrackedFiles stays meaningful: once real time has
+ * passed since this refreshed capture without the file changing again,
+ * the record naturally stops looking racy on its own.
+ *
+ * Returned rather than written here -- see SyncPlan.staleMetadataRefresh.
  */
-function refreshFileStatsIfUnchanged(context: SyncOperationsContext, tracked: FileRecord): void {
-  const fullPath = validatePathWithinRoot(context.rootDir, tracked.path);
-  if (!fullPath) return;
-
-  try {
-    const stats = fs.statSync(fullPath);
-    if (stats.mtimeMs === tracked.modifiedAt && stats.size === tracked.size) return;
-    context.queries.upsertFile({ ...tracked, modifiedAt: stats.mtimeMs, size: stats.size });
-  } catch {
-    // Leave the record untouched; a real deletion is caught next sync.
-  }
+function buildRefreshedRecord(tracked: FileRecord, stats: { mtimeMs: number; size: number }): FileRecord | null {
+  if (stats.mtimeMs === tracked.modifiedAt && stats.size === tracked.size) return null;
+  return { ...tracked, modifiedAt: stats.mtimeMs, size: stats.size, indexedAt: Date.now() };
 }
 
 export function buildGitSyncPlan(context: SyncOperationsContext): SyncPlan | null {
@@ -52,6 +49,7 @@ export function buildGitSyncPlan(context: SyncOperationsContext): SyncPlan | nul
   const added: string[] = [];
   const modified: string[] = [];
   const removed: string[] = [];
+  const staleMetadataRefresh: FileRecord[] = [];
 
   const trackedFiles = context.queries.getAllFiles();
   const trackedPaths = new Set(trackedFiles.map((f) => f.path));
@@ -89,18 +87,23 @@ export function buildGitSyncPlan(context: SyncOperationsContext): SyncPlan | nul
     }
   }
 
-  // Modified files — read + hash only these, compare with DB
+  // Modified files — read + hash only these, compare with DB. Stat and
+  // hash come from the same file descriptor (see readContentHashWithStats)
+  // so a refresh below can never pair an old hash with a newer mtime/size.
   for (const filePath of [...gitChanges.modified, ...drift.modified]) {
-    const contentHash = readContentHash(context.rootDir, filePath, 'during sync');
-    if (contentHash === null) continue;
+    const snapshot = readContentHashWithStats(context.rootDir, filePath);
+    if (snapshot === null) continue;
 
     const tracked = context.queries.getFileByPath(filePath);
     if (!tracked) {
       added.push(filePath);
-    } else if (tracked.contentHash !== contentHash) {
+    } else if (tracked.contentHash !== snapshot.hash) {
       modified.push(filePath);
     } else {
-      refreshFileStatsIfUnchanged(context, tracked);
+      const refreshed = buildRefreshedRecord(tracked, snapshot.stats);
+      if (refreshed) {
+        staleMetadataRefresh.push(refreshed);
+      }
     }
   }
 
@@ -127,5 +130,6 @@ export function buildGitSyncPlan(context: SyncOperationsContext): SyncPlan | nul
     removed,
     filesToIndex,
     changedFilePaths: filesToIndex,
+    staleMetadataRefresh,
   };
 }
