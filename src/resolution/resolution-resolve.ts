@@ -125,6 +125,7 @@ export async function resolveAndPersistBatched(
 
   const total = resolver.queries.getUnresolvedReferencesCount();
   let processed = 0;
+  let previousBatchKey: string | null = null;
   const aggregateStats = {
     total: 0,
     resolved: 0,
@@ -135,8 +136,25 @@ export async function resolveAndPersistBatched(
   // Process in batches. We always read from offset 0 because resolved refs
   // are deleted after each batch, shifting the remaining rows forward.
   while (true) {
-    const batch = resolver.queries.getUnresolvedReferencesBatch(0, batchSize);
+    // Row ids and ref data come from ONE query (getBatchWithIds), not two
+    // separate SELECTs -- a second SELECT just for ids would leave a gap
+    // for another connection/process to delete+reinsert a row in between,
+    // silently swapping in a replacement row's id before this batch's
+    // identity is even captured.
+    const { rows: batch, ids: batchIds } = resolver.queries.getUnresolvedReferencesBatchWithIds(0, batchSize);
     if (batch.length === 0) break;
+
+    // Identify this batch by its actual row ids, not by field values or
+    // the table's total row count. resolveReferencesBatched() isn't
+    // lock-protected against a concurrent indexing pass, which could:
+    // (a) reinsert a *content-identical* reference (same fromNodeId/name/
+    // kind/line/column but a different row) -- indistinguishable from the
+    // just-processed row by field values alone, but never by id; or
+    // (b) change the table's total count enough to mask or fake a stall.
+    // A concurrent writer's inserts always get a larger id and so always
+    // sort after this batch, never into it, so id identity is unaffected
+    // by activity elsewhere in the table.
+    const batchKey = JSON.stringify(batchIds);
 
     const result = resolveAll(resolver, batch);
 
@@ -161,14 +179,21 @@ export async function resolveAndPersistBatched(
     processed += batch.length;
     onProgress?.(processed, total);
 
-    // Yield so progress UI can render between batches
-    await new Promise(resolve => setImmediate(resolve));
-
-    // If nothing was resolved or removed in this batch, we'd loop forever
-    // on the same rows. Break to avoid infinite loop.
-    if (result.resolved.length === 0 && result.unresolved.length === batch.length) {
+    // Safety net against an infinite loop: every ref in this batch was just
+    // deleted above (as resolved or as unresolved), so the same batch must
+    // not reappear next iteration -- if it does, the delete had no effect.
+    // A batch resolving *zero* references is NOT itself a stall: its refs
+    // are still removed, and later (untouched) batches may resolve fine
+    // once e.g. other files finish indexing, so one all-fail batch must
+    // not abort the batches behind it. Measured before the yield below so
+    // a concurrent writer can't influence this comparison.
+    if (batchKey === previousBatchKey) {
       break;
     }
+    previousBatchKey = batchKey;
+
+    // Yield so progress UI can render between batches
+    await new Promise(resolve => setImmediate(resolve));
   }
 
   return { resolved: [], unresolved: [], stats: aggregateStats };

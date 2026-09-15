@@ -135,6 +135,13 @@ export class QueryBuilder {
   getUnresolvedReferencesBatch(offset: number, limit: number): UnresolvedReference[] {
     return this.unresolvedRefs.getBatch(offset, limit);
   }
+  /** Batch rows plus their row ids, from one query -- see UnresolvedReferenceQueries.getBatchWithIds. */
+  getUnresolvedReferencesBatchWithIds(
+    offset: number,
+    limit: number
+  ): { rows: UnresolvedReference[]; ids: number[] } {
+    return this.unresolvedRefs.getBatchWithIds(offset, limit);
+  }
   getUnresolvedReferencesByFiles(filePaths: string[]): UnresolvedReference[] {
     return this.unresolvedRefs.getByFiles(filePaths);
   }
