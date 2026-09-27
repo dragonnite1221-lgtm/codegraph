@@ -10,6 +10,7 @@
 set -uo pipefail
 
 REPO="$1"; LABEL="$2"; PROMPT="$3"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 CG_BIN="${CG_BIN:-$(command -v codegraph || echo /usr/local/bin/codegraph)}"
 OUT_DIR="${AGENT_EVAL_OUT:-/tmp/agent-eval}"; mkdir -p "$OUT_DIR"
 OUT="$OUT_DIR/run-${LABEL}.jsonl"
@@ -30,5 +31,7 @@ claude -p "$PROMPT" \
   --strict-mcp-config --mcp-config "$MCP_CONFIG" \
   > "$OUT" 2>"$OUT_DIR/run-${LABEL}.err"
 
-echo "exit: $? | wrote $OUT ($(wc -l < "$OUT") lines)"
-node "$(cd "$(dirname "$0")" && pwd)/parse-run.mjs" "$OUT" 2>/dev/null || true
+claude_status=$?
+echo "exit: $claude_status | wrote $OUT ($(wc -l < "$OUT") lines)"
+node "$HERE/parse-run.mjs" "$OUT" 2>/dev/null || true
+exit "$claude_status"
