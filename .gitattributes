@@ -1,0 +1,2 @@
+scripts/release.sh text eol=lf
+scripts/release.test.sh text eol=lf
