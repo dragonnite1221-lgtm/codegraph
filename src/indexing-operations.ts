@@ -65,7 +65,7 @@ export interface IndexingDeps {
         // resolving the rebuilt graph against any of that stale state
         // would silently drop or misdirect edges. Must still run before
         // resolveAndPersistBatched below, which is what actually consumes it.
-        if (options.force) {
+        if (options.force || result.filesIndexed > 0) {
           deps.resolver.initialize();
         }
 
@@ -109,7 +109,11 @@ export interface IndexingDeps {
         // soon as the try block's completion value is produced, not when
         // the returned promise settles. Returning the promise unawaited
         // let the lock be released while indexing was still in flight.
-        return await deps.orchestrator.indexFiles(filePaths);
+        const result = await deps.orchestrator.indexFiles(filePaths);
+        if (result.filesIndexed > 0) {
+          deps.resolver.initialize();
+        }
+        return result;
       } finally {
         deps.fileLock.release();
       }
@@ -125,6 +129,10 @@ export interface IndexingDeps {
       }
       try {
         const result = await deps.orchestrator.sync(options.onProgress);
+
+        if (result.filesAdded > 0 || result.filesModified > 0 || result.filesRemoved > 0) {
+          deps.resolver.initialize();
+        }
 
         // Resolve references if files were updated
         if (result.filesAdded > 0 || result.filesModified > 0) {
