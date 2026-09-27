@@ -51,6 +51,7 @@ import {
   CODEGRAPH_SECTION_START,
 } from '../instructions-template';
 import {
+  assertLocalCursorPaths,
   buildCursorMcpConfig,
   mcpJsonPath,
   rulesPath,
@@ -71,6 +72,7 @@ class CursorTarget implements AgentTarget {
   }
 
   detect(loc: Location): DetectionResult {
+    if (loc === 'local') assertLocalCursorPaths();
     const mcpPath = mcpJsonPath(loc);
     const config = readJsonFile(mcpPath);
     const alreadyConfigured = !!config.mcpServers?.codegraph;
@@ -98,6 +100,7 @@ class CursorTarget implements AgentTarget {
   }
 
   uninstall(loc: Location): WriteResult {
+    if (loc === 'local') assertLocalCursorPaths();
     const files: WriteResult['files'] = [];
 
     const mcpPath = mcpJsonPath(loc);
