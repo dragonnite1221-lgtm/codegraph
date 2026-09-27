@@ -150,6 +150,7 @@ export class QueryBuilder {
   deleteSpecificResolvedReferences(refs: ResolvedReferenceKey[]): void {
     this.unresolvedRefs.deleteSpecificResolved(refs);
   }
+  deleteUnresolvedReferencesByIds(ids: number[]): void { this.unresolvedRefs.deleteByIds(ids); }
 
   // === Statistics + Project Metadata ===
   getStats(): GraphStats {

@@ -128,6 +128,16 @@ export class UnresolvedReferenceQueries {
   deleteSpecificResolved(refs: ResolvedReferenceKey[]): void {
     runDeleteSpecificResolvedReferences(this.db, refs);
   }
+
+  deleteByIds(ids: number[]): void {
+    for (const chunk of chunkValues(ids)) {
+      const placeholders = chunk.map(() => '?').join(',');
+      this.runStatement(
+        `DELETE FROM unresolved_refs WHERE id IN (${placeholders})`,
+        (stmt) => stmt.run(...chunk)
+      );
+    }
+  }
 }
 
 export function runGetUnresolvedReferences(

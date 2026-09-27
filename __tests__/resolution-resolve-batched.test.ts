@@ -75,4 +75,33 @@ describe('resolveAndPersistBatched loop control', () => {
     // The 4 resolvable refs must have produced real edges into the graph.
     expect(queries.getIncomingEdges('target')).toHaveLength(4);
   });
+
+  it('does not delete an identical-name reference in the next batch', async () => {
+    queries.insertNode(nodeRecord('target', 'target.ts'));
+    queries.insertNode(nodeRecord('node:a', 'a.ts'));
+    queries.insertUnresolvedRefsBatch([
+      unresolvedRef('node:a', 'same-call'),
+      { ...unresolvedRef('node:a', 'same-call'), line: 2, column: 2 },
+    ]);
+
+    const result = await resolveAndPersistBatched(makeResolver(queries, new Set()), undefined, 1);
+
+    expect(result.stats.total).toBe(2);
+    expect(result.stats.resolved).toBe(2);
+    expect(queries.getUnresolvedReferencesCount()).toBe(0);
+    expect(queries.getIncomingEdges('target')).toHaveLength(2);
+  });
+
+  it('rolls back edges when deletion of the fetched batch fails', async () => {
+    queries.insertNode(nodeRecord('target', 'target.ts'));
+    queries.insertNode(nodeRecord('node:a', 'a.ts'));
+    queries.insertUnresolvedRefsBatch([unresolvedRef('node:a', 'same-call')]);
+    vi.spyOn(queries, 'deleteUnresolvedReferencesByIds').mockImplementation(() => {
+      throw new Error('delete failed');
+    });
+
+    await expect(resolveAndPersistBatched(makeResolver(queries, new Set()), undefined, 1)).rejects.toThrow('delete failed');
+    expect(queries.getUnresolvedReferencesCount()).toBe(1);
+    expect(queries.getIncomingEdges('target')).toHaveLength(0);
+  });
 });
