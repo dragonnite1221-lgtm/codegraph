@@ -6,6 +6,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 import { CodeGraphConfig, DEFAULT_CONFIG } from './types';
 import { validateConfig } from './config-validate';
 
@@ -92,6 +93,16 @@ export function saveConfig(projectRoot: string, config: CodeGraphConfig): void {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
+  if (path.relative(fs.realpathSync(projectRoot), fs.realpathSync(dir)) !== '.codegraph') {
+    throw new Error('Config directory must remain inside the project root');
+  }
+  try {
+    if (fs.lstatSync(configPath).isSymbolicLink()) {
+      throw new Error('Refusing linked config destination');
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
 
   // Create a copy without rootDir (it's always derived from project path)
   const toSave = { ...config };
@@ -100,9 +111,13 @@ export function saveConfig(projectRoot: string, config: CodeGraphConfig): void {
   const content = JSON.stringify(toSave, null, 2);
 
   // Atomic write: write to temp file then rename to prevent partial/corrupt configs
-  const tmpPath = configPath + '.tmp';
-  fs.writeFileSync(tmpPath, content, 'utf-8');
-  fs.renameSync(tmpPath, configPath);
+  const tmpPath = path.join(dir, `.config.${randomUUID()}.tmp`);
+  try {
+    fs.writeFileSync(tmpPath, content, { encoding: 'utf-8', flag: 'wx', mode: 0o600 });
+    fs.renameSync(tmpPath, configPath);
+  } finally {
+    fs.rmSync(tmpPath, { force: true });
+  }
 }
 
 /**
