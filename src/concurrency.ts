@@ -16,6 +16,7 @@ import * as fs from 'fs';
  */
 export class FileLock {
   private lockPath: string;
+  private recoveryPath: string;
   private held = false;
 
   /**
@@ -30,12 +31,27 @@ export class FileLock {
 
   constructor(lockPath: string) {
     this.lockPath = lockPath;
+    this.recoveryPath = lockPath + '.reclaim';
   }
 
   /**
    * Acquire the lock. Throws if the lock is held by another live process.
    */
   acquire(): void {
+    // Serialize the stale decision, unlink, and exclusive create. A second
+    // reclaimer must not delete a lock created after its own stale read.
+    try {
+      fs.mkdirSync(this.recoveryPath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+        throw new Error(
+          'CodeGraph recovery guard exists; stop indexing processes before removing ' +
+          this.recoveryPath
+        );
+      }
+      throw err;
+    }
+    try {
     // Check for existing lock
     if (fs.existsSync(this.lockPath)) {
       try {
@@ -89,6 +105,9 @@ export class FileLock {
       }
       throw err;
     }
+    } finally {
+      fs.rmdirSync(this.recoveryPath);
+    }
   }
 
   /**
@@ -139,8 +158,8 @@ export class FileLock {
     try {
       process.kill(pid, 0);
       return true;
-    } catch {
-      return false;
+    } catch (err) {
+      return (err as NodeJS.ErrnoException).code === 'EPERM';
     }
   }
 }

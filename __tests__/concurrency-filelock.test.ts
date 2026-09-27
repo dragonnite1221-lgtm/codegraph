@@ -7,7 +7,7 @@
  * overrun by a second writer. Liveness, not age, must decide when the
  * owner PID is known; age is only the fallback for an unreadable PID.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -54,6 +54,26 @@ describe('FileLock staleness', () => {
     expect(fs.readFileSync(lockPath, 'utf-8')).toBe(String(process.pid));
     lock.release();
     expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it('does not let a second reclaimer inspect or delete a newly owned lock', () => {
+    const deadPid = 2147483646;
+    fs.writeFileSync(lockPath, String(deadPid));
+    const first = new FileLock(lockPath);
+    const second = new FileLock(lockPath);
+    const probe = vi.spyOn(first as unknown as { isProcessAlive(pid: number): boolean }, 'isProcessAlive');
+    probe.mockImplementation(() => {
+      expect(() => second.acquire()).toThrow(/recovery guard/);
+      expect(fs.readFileSync(lockPath, 'utf-8')).toBe(String(deadPid));
+      return false;
+    });
+
+    first.acquire();
+    expect(fs.readFileSync(lockPath, 'utf-8')).toBe(String(process.pid));
+    expect(() => second.acquire()).toThrow(/locked by another process/);
+    expect(fs.existsSync(lockPath + '.reclaim')).toBe(false);
+    first.release();
+    probe.mockRestore();
   });
 
   it('falls back to age for an unreadable PID: fresh unreadable lock is respected', () => {
