@@ -117,4 +117,19 @@ describe('Installer targets — TOML serializer (Codex backbone)', () => {
     expect(content.match(/\[\[foo\]\]/g)?.length).toBe(2);
     expect(content).toContain('[mcp_servers.codegraph]');
   });
+
+  it('replacing or removing a block preserves following array tables', () => {
+    const sibling = '[[other_agents]]\nname = "keep"\n';
+    const existing = '[mcp_servers.codegraph]\ncommand = "old"\n\n' + sibling;
+    const block = buildTomlTable('mcp_servers.codegraph', { command: 'new' });
+
+    const replaced = upsertTomlTable(existing, 'mcp_servers.codegraph', block);
+    expect(replaced.action).toBe('replaced');
+    expect(replaced.content).toContain(sibling);
+    expect(replaced.content).not.toContain('command = "old"');
+
+    const removed = removeTomlTable(existing, 'mcp_servers.codegraph');
+    expect(removed.action).toBe('removed');
+    expect(removed.content).toBe(sibling);
+  });
 });

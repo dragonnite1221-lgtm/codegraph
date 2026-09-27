@@ -7,11 +7,11 @@
  *
  * Strategy: treat the file as text. Find the `[mcp_servers.codegraph]`
  * header line, splice it (and the lines that follow it until the next
- * `[...]` header or EOF) in or out. Everything outside that block is
+ * `[...]` or `[[...]]` header or EOF) in or out. Everything outside that block is
  * preserved verbatim, byte-for-byte.
  *
  * Limitations (acceptable for our narrow use):
- *   - Only handles top-level table headers; not array-of-tables or
+ *   - Only handles top-level table boundaries; not
  *     subtables nested inside `[mcp_servers]` itself (we always write
  *     the full dotted key `[mcp_servers.codegraph]`).
  *   - Doesn't validate sibling TOML — if the file is malformed
@@ -146,14 +146,14 @@ function findHeaderIndex(content: string, headerLine: string): number {
 }
 
 /**
- * Find the byte index of the next top-level `[...]` table header
- * (excluding array-of-tables `[[...]]`) starting from `from`, or
+ * Find the byte index of the next top-level `[...]` or `[[...]]` table header
+ * starting from `from`, or
  * return content length when none.
  */
 function findNextTableHeader(content: string, from: number): number {
   // Find the start of the next table header line ([...]), tolerating leading
   // whitespace (TOML permits indentation) so an indented sibling table still
-  // bounds the current block; skip array-of-tables ([[...]]).
+  // bounds the current block, including array-of-tables ([[...]]).
   let i = from;
   while (i < content.length) {
     const nlIdx = content.indexOf('\n', i);
@@ -161,7 +161,7 @@ function findNextTableHeader(content: string, from: number): number {
     const lineStart = nlIdx + 1;
     let j = lineStart;
     while (content[j] === ' ' || content[j] === '\t') j++;
-    if (content[j] === '[' && content[j + 1] !== '[') return lineStart;
+    if (content[j] === '[') return lineStart;
     i = lineStart;
   }
   return content.length;
