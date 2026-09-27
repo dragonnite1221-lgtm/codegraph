@@ -1,7 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { buildAffectedTestMatcher, findAffectedTests, globToRegex } from '../src/bin/affected-tests';
+import * as os from 'os';
+import * as path from 'path';
+import { buildAffectedTestMatcher, findAffectedTests, globToRegex, normalizeChangedFiles } from '../src/bin/affected-tests';
 
 describe('buildAffectedTestMatcher', () => {
+  it('normalizes CLI paths before graph lookup and rejects outside paths', () => {
+    const root = path.join(os.tmpdir(), 'codegraph-affected-project');
+    const graph = { getFileDependents: (file: string) => file === 'src/core.ts' ? ['tests/core.test.ts'] : [] };
+    for (const input of ['src/core.ts', './src/core.ts', 'src\\core.ts']) {
+      const files = normalizeChangedFiles([input], root, root);
+      expect(findAffectedTests(files, graph, { maxDepth: 1 }).affectedTests).toEqual(['tests/core.test.ts']);
+    }
+    expect(normalizeChangedFiles(['../../src/core.ts'], root, path.join(root, 'packages', 'app'))).toEqual(['src/core.ts']);
+    expect(() => normalizeChangedFiles(['../outside.ts'], root, root)).toThrow(/outside the project/);
+  });
+
   it('matches relative test directories without a leading slash', () => {
     const isTestFile = buildAffectedTestMatcher();
 

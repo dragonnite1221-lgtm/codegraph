@@ -3,7 +3,7 @@ import * as fs from 'fs';
 
 import { isInitialized } from '../directory';
 
-import { findAffectedTests } from './affected-tests';
+import { findAffectedTests, normalizeChangedFiles } from './affected-tests';
 import { chalk, error, info, parseIntOption } from './cli-output';
 
 type CommandDeps = {
@@ -52,7 +52,7 @@ export function registerAffectedCommand(program: Command, deps: CommandDeps): vo
 
         const { default: CodeGraph } = await deps.loadCodeGraph();
         const cg = await CodeGraph.open(projectPath);
-        const result = findAffectedTests(changedFiles, cg, {
+        const result = findAffectedTests(normalizeChangedFiles(changedFiles, projectPath), cg, {
           maxDepth: parseIntOption(options.depth, 5),
           filter: options.filter,
         });

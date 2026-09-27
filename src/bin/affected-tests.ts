@@ -1,3 +1,5 @@
+import * as path from 'path';
+
 const DEFAULT_TEST_PATTERNS = [
   /\.spec\./,
   /\.test\./,
@@ -54,6 +56,18 @@ export type AffectedTestsResult = {
   affectedTests: string[];
   totalDependentsTraversed: number;
 };
+
+export function normalizeChangedFiles(files: string[], projectPath: string, cwd = process.cwd()): string[] {
+  const root = path.resolve(projectPath);
+  return files.map(file => {
+    const absolute = path.resolve(cwd, file.replace(/\\/g, '/'));
+    const relative = path.relative(root, absolute);
+    if (!relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
+      throw new Error(`Changed file is outside the project: ${file}`);
+    }
+    return relative.split(path.sep).join('/');
+  });
+}
 
 export function findAffectedTests(
   changedFiles: string[],
