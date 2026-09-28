@@ -149,8 +149,10 @@ export async function runInstallerWithOptions(opts: RunInstallerOptions): Promis
   }
 
   // Step 5: per-target install loop.
+  let failedTargets = 0;
   for (const target of targets) {
     if (!target.supportsLocation(location)) {
+      failedTargets++;
       clack.log.warn(
         `${target.displayName}: skipped — does not support --location=${location}.`,
       );
@@ -165,6 +167,7 @@ export async function runInstallerWithOptions(opts: RunInstallerOptions): Promis
       // report it and keep configuring the remaining targets.
       const msg = err instanceof Error ? err.message : String(err);
       clack.log.error(`${target.displayName}: ${msg}`);
+      failedTargets++;
       continue;
     }
     for (const file of result.files) {
@@ -179,8 +182,12 @@ export async function runInstallerWithOptions(opts: RunInstallerOptions): Promis
   }
 
   // Step 6: for local install, initialize the project.
-  if (location === 'local') {
+  if (location === 'local' && failedTargets < targets.length) {
     await initializeLocalProject(clack);
+  }
+
+  if (failedTargets > 0) {
+    throw new Error(`${failedTargets} of ${targets.length} agent target(s) failed or were skipped; installation incomplete.`);
   }
 
   if (location === 'global') {
