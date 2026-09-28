@@ -105,7 +105,6 @@ describe('extraction result storage', () => {
     const result = makeResult({
       errors: [{ message: 'optional framework extractor failed', severity: 'warning', code: 'parse_error' }],
     });
-
     expect(shouldStoreParseResult(result)).toBe(false);
     storeExtractionResult(
       queries,
