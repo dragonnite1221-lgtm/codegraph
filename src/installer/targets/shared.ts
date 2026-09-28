@@ -144,11 +144,19 @@ export function atomicWriteFileSync(filePath: string, content: string): void {
     fs.mkdirSync(dir, { recursive: true });
   }
   const tmpPath = filePath + '.tmp.' + process.pid;
+  const mode = fs.existsSync(filePath) ? fs.statSync(filePath).mode & 0o777 : 0o600;
+  let fd: number | undefined;
+  let created = false;
   try {
-    fs.writeFileSync(tmpPath, content);
+    fd = fs.openSync(tmpPath, 'wx', mode);
+    created = true;
+    fs.writeFileSync(fd, content);
+    fs.closeSync(fd);
+    fd = undefined;
     fs.renameSync(tmpPath, filePath);
   } catch (err) {
-    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    if (fd !== undefined) try { fs.closeSync(fd); } catch { /* ignore */ }
+    if (created) try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
     throw err;
   }
 }
