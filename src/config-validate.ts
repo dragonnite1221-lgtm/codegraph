@@ -3,7 +3,8 @@
  * limit. No behavior change.
  */
 
-import { CodeGraphConfig, Language } from './types';
+import { CodeGraphConfig } from './types';
+import { LANGUAGE_DISPLAY_NAMES } from './extraction/grammar-tables';
 
 function isSafeRegex(pattern: string): boolean {
   // Reject excessively long patterns
@@ -49,17 +50,8 @@ export function validateConfig(config: unknown): config is CodeGraphConfig {
   if (!c.exclude.every((p) => typeof p === 'string')) return false;
 
   // Validate languages
-  const validLanguages: Language[] = [
-    'typescript',
-    'javascript',
-    'python',
-    'go',
-    'rust',
-    'java',
-    'svelte',
-    'unknown',
-  ];
-  if (!c.languages.every((l) => validLanguages.includes(l as Language))) return false;
+  const validLanguages = new Set(Object.keys(LANGUAGE_DISPLAY_NAMES));
+  if (!c.languages.every((l) => typeof l === 'string' && validLanguages.has(l))) return false;
 
   // Validate frameworks
   for (const fw of c.frameworks) {
