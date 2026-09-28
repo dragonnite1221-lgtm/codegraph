@@ -1,16 +1,13 @@
 import type { UnresolvedReference } from '../types';
 import type { SqliteDatabase, SqliteStatement } from './sqlite-adapter';
 import { type UnresolvedRefRow, rowToUnresolvedReference } from './row-mappers';
-
 type StatementRunner = <T>(sql: string, fn: (stmt: SqliteStatement) => T) => T;
 const SQLITE_VARIABLE_CHUNK_SIZE = 900;
-
 export type ResolvedReferenceKey = {
   fromNodeId: string;
   referenceName: string;
   referenceKind: string;
 };
-
 function chunkValues<T>(values: T[]): T[][] {
   const chunks: T[][] = [];
   for (let index = 0; index < values.length; index += SQLITE_VARIABLE_CHUNK_SIZE) {
@@ -18,7 +15,6 @@ function chunkValues<T>(values: T[]): T[][] {
   }
   return chunks;
 }
-
 export class UnresolvedReferenceQueries {
   private stmts: {
     insert?: SqliteStatement;
@@ -27,7 +23,6 @@ export class UnresolvedReferenceQueries {
     count?: SqliteStatement;
     batch?: SqliteStatement;
   } = {};
-
   constructor(
     private readonly db: SqliteDatabase,
     private readonly runStatement: StatementRunner
@@ -55,7 +50,6 @@ export class UnresolvedReferenceQueries {
 
   insertBatch(refs: UnresolvedReference[]): void {
     if (refs.length === 0) return;
-
     const body = () => {
       for (const ref of refs) {
         this.insert(ref);
@@ -155,7 +149,6 @@ export function runGetUnresolvedReferencesByFiles(
   filePaths: string[]
 ): UnresolvedReference[] {
   if (filePaths.length === 0) return [];
-
   const rows: UnresolvedRefRow[] = [];
   for (const chunk of chunkValues(filePaths)) {
     const placeholders = chunk.map(() => '?').join(',');
@@ -167,7 +160,6 @@ export function runGetUnresolvedReferencesByFiles(
       rows.push(row);
     }
   }
-
   return rows.map(rowToUnresolvedReference);
 }
 
@@ -176,7 +168,6 @@ export function runDeleteResolvedReferences(
   fromNodeIds: string[]
 ): void {
   if (fromNodeIds.length === 0) return;
-
   for (const chunk of chunkValues(fromNodeIds)) {
     const placeholders = chunk.map(() => '?').join(',');
     runStatement(
@@ -191,7 +182,6 @@ export function runDeleteSpecificResolvedReferences(
   refs: ResolvedReferenceKey[]
 ): void {
   if (refs.length === 0) return;
-
   const stmt = db.prepare(
     'DELETE FROM unresolved_refs WHERE from_node_id = ? AND reference_name = ? AND reference_kind = ?'
   );
