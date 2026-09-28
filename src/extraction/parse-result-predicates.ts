@@ -8,7 +8,7 @@
 import type { ExtractionResult } from '../types';
 
 export function shouldStoreParseResult(result: ExtractionResult): boolean {
-  return !hasFatalExtractionError(result);
+  return !hasFatalExtractionError(result) && (result.nodes.length > 0 || result.errors.length === 0);
 }
 
 export function hasFatalExtractionError(result: ExtractionResult): boolean {
