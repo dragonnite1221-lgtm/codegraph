@@ -53,12 +53,20 @@ export function buildGitSyncPlan(context: SyncOperationsContext): SyncPlan | nul
 
   const added: string[] = [];
   const modified: string[] = [];
-  const removed: string[] = [];
+  const removed = new Set<string>();
   const staleMetadataRefresh: FileRecord[] = [];
 
   const trackedFiles = context.queries.getAllFiles();
   const trackedPaths = new Set(trackedFiles.map((f) => f.path));
   const gitFlagged = new Set([...gitChanges.modified, ...gitChanges.added, ...gitChanges.deleted]);
+
+  // Reconcile persisted files against the current Git-visible target set,
+  // including files that became excluded without a Git content change.
+  for (const tracked of trackedFiles) {
+    if (!gitVisible.has(tracked.path) || !shouldIncludeFile(tracked.path, context.config)) {
+      removed.add(tracked.path);
+    }
+  }
 
   // `git status` only diffs the working tree against the CURRENT
   // index/HEAD, so it stays silent about a tracked file whose content
@@ -88,7 +96,7 @@ export function buildGitSyncPlan(context: SyncOperationsContext): SyncPlan | nul
   for (const filePath of [...gitChanges.deleted, ...drift.removed]) {
     const tracked = context.queries.getFileByPath(filePath);
     if (tracked) {
-      removed.push(filePath);
+      removed.add(filePath);
     }
   }
 
@@ -132,7 +140,7 @@ export function buildGitSyncPlan(context: SyncOperationsContext): SyncPlan | nul
       newlyVisible.length,
     added,
     modified,
-    removed,
+    removed: [...removed],
     filesToIndex,
     changedFilePaths: filesToIndex,
     staleMetadataRefresh,
