@@ -55,6 +55,27 @@ describe('CodeGraph Foundation', () => {
       const config = loadConfig(tempDir);
       expect(config.maxFileSize).toBe(999999);
     });
+
+    it('keeps linked targets untouched when saving config', () => {
+      const dir = getCodeGraphDir(tempDir);
+      const external = path.join(tempDir, 'outside.txt');
+      fs.mkdirSync(dir);
+      fs.writeFileSync(external, 'preserve');
+      const oldTemp = path.join(dir, 'config.json.tmp');
+      if (process.platform === 'win32') fs.linkSync(external, oldTemp);
+      else fs.symlinkSync(external, oldTemp);
+
+      saveConfig(tempDir, { ...DEFAULT_CONFIG, rootDir: tempDir });
+      expect(fs.readFileSync(external, 'utf-8')).toBe('preserve');
+      expect(fs.existsSync(path.join(dir, 'config.json'))).toBe(true);
+
+      fs.rmSync(dir, { recursive: true });
+      const elsewhere = path.join(tempDir, 'elsewhere');
+      fs.mkdirSync(elsewhere);
+      fs.symlinkSync(elsewhere, dir, process.platform === 'win32' ? 'junction' : 'dir');
+      expect(() => saveConfig(tempDir, { ...DEFAULT_CONFIG, rootDir: tempDir })).toThrow(/symlink/);
+      expect(fs.existsSync(path.join(elsewhere, 'config.json'))).toBe(false);
+    });
   });
 
   describe('Directory Management', () => {

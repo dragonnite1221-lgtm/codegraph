@@ -6,6 +6,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 import { CodeGraphConfig, DEFAULT_CONFIG } from './types';
 import { validateConfig } from './config-validate';
 
@@ -92,6 +93,9 @@ export function saveConfig(projectRoot: string, config: CodeGraphConfig): void {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
+  if (fs.lstatSync(dir).isSymbolicLink()) {
+    throw new Error(`CodeGraph directory cannot be a symlink: ${dir}`);
+  }
 
   // Create a copy without rootDir (it's always derived from project path)
   const toSave = { ...config };
@@ -100,9 +104,20 @@ export function saveConfig(projectRoot: string, config: CodeGraphConfig): void {
   const content = JSON.stringify(toSave, null, 2);
 
   // Atomic write: write to temp file then rename to prevent partial/corrupt configs
-  const tmpPath = configPath + '.tmp';
-  fs.writeFileSync(tmpPath, content, 'utf-8');
-  fs.renameSync(tmpPath, configPath);
+  const tmpPath = path.join(dir, `config-${randomUUID()}.tmp`);
+  let fd: number | undefined;
+  let created = false;
+  try {
+    fd = fs.openSync(tmpPath, 'wx', 0o600);
+    created = true;
+    fs.writeFileSync(fd, content, 'utf-8');
+    fs.closeSync(fd);
+    fd = undefined;
+    fs.renameSync(tmpPath, configPath);
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+    if (created) fs.rmSync(tmpPath, { force: true });
+  }
 }
 
 /**
