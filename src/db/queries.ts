@@ -150,6 +150,13 @@ export class QueryBuilder {
   deleteSpecificResolvedReferences(refs: ResolvedReferenceKey[]): void {
     this.unresolvedRefs.deleteSpecificResolved(refs);
   }
+  deleteUnresolvedReferencesByIds(ids: number[]): void {
+    for (let i = 0; i < ids.length; i += 900) {
+      const chunk = ids.slice(i, i + 900);
+      this.withStatement(`DELETE FROM unresolved_refs WHERE id IN (${chunk.map(() => '?').join(',')})`,
+        (stmt) => stmt.run(...chunk));
+    }
+  }
 
   // === Statistics + Project Metadata ===
   getStats(): GraphStats {

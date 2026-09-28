@@ -43,6 +43,22 @@ describe('resolveAndPersistBatched loop control', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  it('does not delete an identical reference in the next batch', async () => {
+    queries.insertNode(nodeRecord('target', 'target.ts'));
+    queries.insertNode(nodeRecord('node:a', 'a.ts'));
+    queries.insertUnresolvedRefsBatch([
+      unresolvedRef('node:a', 'same-call'),
+      { ...unresolvedRef('node:a', 'same-call'), line: 2 },
+    ]);
+
+    const result = await resolveAndPersistBatched(makeResolver(queries, new Set()), undefined, 1);
+
+    expect(result.stats.total).toBe(2);
+    expect(result.stats.resolved).toBe(2);
+    expect(queries.getIncomingEdges('target')).toHaveLength(2);
+    expect(queries.getUnresolvedReferencesCount()).toBe(0);
+  });
+
   it('continues processing later batches after an earlier batch resolves nothing', async () => {
     // Batch 1 (batchSize=2): both fail to resolve.
     // Batch 2 and 3: both refs resolve successfully, against a real target node.
