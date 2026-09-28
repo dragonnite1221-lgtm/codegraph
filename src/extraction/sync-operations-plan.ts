@@ -5,7 +5,7 @@
 
 import type { FileRecord } from '../types';
 import { scanDirectory } from './file-scanner';
-import { readContentHash } from './sync-file-checks';
+import { readContentHashWithStats } from './sync-file-checks';
 import { buildGitSyncPlan } from './sync-operations-git-plan';
 import type { SyncOperationsContext, SyncPlan } from './sync-operations';
 
@@ -42,13 +42,17 @@ export function buildFullScanSyncPlan(context: SyncOperationsContext): SyncPlan 
 
   // Find files to add or update
   for (const filePath of currentFiles) {
-    const contentHash = readContentHash(context.rootDir, filePath, 'during sync');
-    if (contentHash === null) continue;
+    const snapshot = readContentHashWithStats(context.rootDir, filePath, context.config.maxFileSize);
+    if (snapshot === null) continue;
+    if (snapshot.oversized) {
+      if (trackedMap.has(filePath)) removed.push(filePath);
+      continue;
+    }
 
     const tracked = trackedMap.get(filePath);
     if (!tracked) {
       added.push(filePath);
-    } else if (tracked.contentHash !== contentHash) {
+    } else if (tracked.contentHash !== snapshot.hash) {
       modified.push(filePath);
     }
   }
