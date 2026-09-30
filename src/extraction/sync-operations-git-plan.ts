@@ -96,8 +96,15 @@ export function buildGitSyncPlan(context: SyncOperationsContext): SyncPlan | nul
   // hash come from the same file descriptor (see readContentHashWithStats)
   // so a refresh below can never pair an old hash with a newer mtime/size.
   for (const filePath of [...gitChanges.modified, ...drift.modified]) {
-    const snapshot = readContentHashWithStats(context.rootDir, filePath);
+    const snapshot = readContentHashWithStats(context.rootDir, filePath, context.config.maxFileSize);
     if (snapshot === null) continue;
+
+    if (snapshot.oversized) {
+      if (context.queries.getFileByPath(filePath) && !removed.includes(filePath)) {
+        removed.push(filePath);
+      }
+      continue;
+    }
 
     const tracked = context.queries.getFileByPath(filePath);
     if (!tracked) {

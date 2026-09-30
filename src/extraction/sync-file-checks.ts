@@ -42,8 +42,9 @@ export function isPathWithinRoot(rootDir: string, filePath: string): boolean {
  */
 export function readContentHashWithStats(
   rootDir: string,
-  filePath: string
-): { hash: string; stats: fs.Stats } | null {
+  filePath: string,
+  maxFileSize: number
+): { hash: string; stats: fs.Stats; oversized?: false } | { stats: fs.Stats; oversized: true } | null {
   const fullPath = validatePathWithinRoot(rootDir, filePath);
   if (!fullPath) {
     logWarn('Path traversal blocked while detecting changes', { filePath });
@@ -54,8 +55,20 @@ export function readContentHashWithStats(
   try {
     fd = fs.openSync(fullPath, 'r');
     const stats = fs.fstatSync(fd);
-    const content = fs.readFileSync(fd, 'utf-8');
-    return { hash: hashContent(content), stats };
+    if (stats.size > maxFileSize) return { stats, oversized: true };
+
+    // A writer can grow the file after fstat; cap the actual read too.
+    const chunks: Buffer[] = [];
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let total = 0;
+    while (true) {
+      const count = fs.readSync(fd, buffer, 0, Math.min(buffer.length, maxFileSize - total + 1), null);
+      if (count === 0) break;
+      total += count;
+      if (total > maxFileSize) return { stats, oversized: true };
+      chunks.push(Buffer.from(buffer.subarray(0, count)));
+    }
+    return { hash: hashContent(Buffer.concat(chunks).toString('utf-8')), stats };
   } catch (error) {
     logDebug('Skipping unreadable file during sync', { filePath, error: String(error) });
     return null;
