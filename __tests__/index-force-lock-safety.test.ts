@@ -28,6 +28,7 @@ import { CodeGraph } from '../src';
 describe('codegraph index --force vs. a concurrently held file lock', () => {
   let testDir: string;
   let lockPath: string;
+  let cliGraph: CodeGraph | undefined;
 
   beforeEach(async () => {
     testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-cli-force-lock-'));
@@ -42,6 +43,9 @@ describe('codegraph index --force vs. a concurrently held file lock', () => {
   });
 
   afterEach(() => {
+    // A mocked process.exit cannot release handles as real process exit does.
+    cliGraph?.destroy();
+    cliGraph = undefined;
     fs.rmSync(testDir, { recursive: true, force: true });
     vi.restoreAllMocks();
   });
@@ -64,6 +68,12 @@ describe('codegraph index --force vs. a concurrently held file lock', () => {
       },
     };
 
+    const open = CodeGraph.open.bind(CodeGraph);
+    vi.spyOn(CodeGraph, 'open').mockImplementation(async (...args) => {
+      cliGraph = await open(...args);
+      return cliGraph;
+    });
+
     const program = new Command();
     registerIndexCommand(program, deps);
 
@@ -72,6 +82,9 @@ describe('codegraph index --force vs. a concurrently held file lock', () => {
     ).rejects.toThrow('process.exit(1)');
 
     exitSpy.mockRestore();
+    cliGraph?.destroy();
+    vi.mocked(CodeGraph.open).mockRestore();
+    cliGraph = undefined;
 
     // Reopen and confirm the graph survived the rejected force-reindex.
     const check = await CodeGraph.open(testDir);

@@ -1,0 +1,71 @@
+{
+  "provider": "antigravity",
+  "mechanism": "local-cli",
+  "family": "gemini-flash",
+  "requested_model": "gemini-3.8-flash-high",
+  "confirmed_model": "gemini-3.8-flash-high",
+  "catalog_models": [
+    "gemini-3.8-flash-high",
+    "gemini-3.8-flash-medium",
+    "gemini-3.8-flash-low",
+    "gemini-3.7-flash-high",
+    "gemini-3.7-flash-medium",
+    "gemini-3.7-flash-low",
+    "gemini-3.6-flash-high",
+    "gemini-3.6-flash-medium",
+    "gemini-3.6-flash-low",
+    "gemini-3.1-pro-high",
+    "gemini-3.1-pro-low",
+    "claude-sonnet-4-6",
+    "claude-opus-4-6-thinking",
+    "gpt-oss-120b-medium"
+  ],
+  "baseline": "1f0050bfba01aa922cb1f55905c78a698b126fbe",
+  "reviewed_fix_head": "2920016fc58bc03cec441ab5d56105655691426a",
+  "reviewed_tree": "ebac5e5c8e3da24d6fdf0670d24c1e34eb2896ef",
+  "review_result": {
+    "reviewed_head": "2920016fc58bc03cec441ab5d56105655691426a",
+    "findings": [],
+    "verdict": "PASS",
+    "coverage_limits": [
+      "Maintainer attestation boundary: Evidence constitutes a maintainer attestation bound to local CLI execution metadata and git tree/blob hashes, not cryptographic reviewer authentication or hosted service proof.",
+      "PR execution context boundary: Because the validator and workflow execute within the pull_request branch context, the PR-controlled checker cannot unilaterally prevent malicious author tampering; existing branch protection, security/build workflows, and maintainer reviews remain necessary trust gates.",
+      "Scope and snapshot binding: The review exclusively covers snapshot head 2920016fc58bc03cec441ab5d56105655691426a (tree ebac5e5c8e3da24d6fdf0670d24c1e34eb2896ef) against baseline 1f0050bfba01aa922cb1f55905c78a698b126fbe. Only .github/review-evidence/windows-fixes.json may be added subsequently; any other file modification, deletion, or mode change invalidates the attestation and requires a fresh review.",
+      "PR baseline coupling: Baseline must strictly equal the pull request base commit (EXPECTED_REVIEW_BASE); any base drift or rebase requires re-validation.",
+      "CI and offline validation: CI validation runs purely offline synthetic tests and verification scripts without hosted model invocation, credential provisioning, or network AI access."
+    ]
+  },
+  "conversation_id": "debf81d5-0251-49a4-8a8d-d0f05b1295c4",
+  "review_scope": "Workflow, validator, policy and evidence design at snapshot; unchanged Windows source fixes covered by separate source_review below.",
+  "source_review": {
+    "confirmed_model": "gemini-3.8-flash-high",
+    "conversation_id": "d6fb73a1-638c-46d9-be58-064879c9d347",
+    "result": {
+      "reviewed_head": "03b82ca9660bc64c6703647b0799e12e8fa9f4f0",
+      "findings": [],
+      "verdict": "pass",
+      "coverage_limits": [
+        "Native Windows environments lacking SeCreateSymbolicLinkPrivilege (Developer Mode disabled) cannot execute file symlink creation tests (e.g. __tests__/security-mcp.test.ts), which are conditionally skipped via context.skip as intended platform coverage gaps.",
+        "Native Windows lacks POSIX directory file descriptors (dir_fd / openat), precluding race-free directory-relative file descriptor operations available on POSIX systems.",
+        "The 13 skipped tests in the full bounded run and 8 skipped tests in the hub run reflect these platform-constrained coverage boundaries rather than regressions."
+      ]
+    }
+  },
+  "reviewed_files": {
+    ".github/LOCAL_AI_REVIEW.md": "4c39cf637eb82b5621b8c7cb85c4c44eb1c196d620df3f40c7780342f5c38858",
+    ".github/ai-review-policy.json": "6b06928e66b4456d8c4dc490e801bf5d4fa8f0b45cc5c4ba728db1bd8ba97e7b",
+    ".github/scripts/test_validate_local_ai_review.py": "62a1249477cb6a7c6f1ea73650aee7ee519da11c82ec03a839fd2ceb5acc4540",
+    ".github/scripts/validate-local-ai-review.py": "d79754f3da71a27293a1d62329514489e9566c8b97481c3bbe97cd3ef265a509",
+    ".github/workflows/claude.yml": "fcaf7520588d3bd278a1de552ab4c121802b48472d5d47cf9fe5d0d2e17d941a",
+    "__tests__/index-force-lock-safety.test.ts": "a064bac146fbc7ef2d3c73599fdccfc7c0894215c2420fa005ef764c8884e429",
+    "__tests__/installer-targets-helpers.ts": "bb08a130069cea6b2e0bc333d4537c320de70ebfce3161861cf1943b8edf507f",
+    "__tests__/installer-targets-partial.test.ts": "23d1e4bd5046c4306626353e565a9591870bf93318e48474668b0ad768ca058f",
+    "__tests__/installer-targets-partial2.test.ts": "5839d68cb3465df63c195679b5db6b29ebc25cd5177c7645b33c0a5b94e22825",
+    "__tests__/instructions-sync.test.ts": "b2127bf5a7b449220867520f43277ac3574e4f0d9d26cb3ccd51f91d6fa84627",
+    "__tests__/mcp-initialize.test.ts": "7becc4f358011d596a653d2bc210092df25c2409f712bd35e8e3c86276cff99f",
+    "__tests__/security-mcp.test.ts": "9bba6f07fadbd45fdb8e27eb11a62e8fdcc4c35c6a2ee24615ad098809c4c881",
+    "__tests__/symlink-test-helper.ts": "a226a9f61c9cbf0bd5355025b8bf0ad551ff0407aa1c680ddebdfe6d0f26d668"
+  },
+  "trust_limit": "Maintainer-recorded attestation; not independently authenticated AI output. PR-controlled validator cannot prevent malicious fabrication.",
+  "evidence_only_followup": "Only this JSON is added after the reviewed snapshot; it was not represented as part of the old source-only review."
+}

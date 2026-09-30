@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { ALL_TARGETS, getTarget, resolveTargetFlag } from '../src/installer/targets/registry';
 import { upsertTomlTable, removeTomlTable, buildTomlTable } from '../src/installer/targets/toml';
-import { mkTmpDir, setHome, listAllFiles } from './installer-targets-helpers';
+import { mkTmpDir, setHome, listAllFiles, opencodeTestDir } from './installer-targets-helpers';
 
 describe('Installer targets — partial-state idempotency', () => {
   let tmpHome: string;
@@ -48,7 +48,7 @@ describe('Installer targets — partial-state idempotency', () => {
 
   it('opencode: prefers .jsonc when both .json and .jsonc exist', () => {
     const opencode = getTarget('opencode')!;
-    const dir = path.join(tmpHome, '.config', 'opencode');
+    const dir = opencodeTestDir(tmpHome);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'opencode.json'), '{\n  "$schema": "https://opencode.ai/config.json"\n}\n');
     fs.writeFileSync(path.join(dir, 'opencode.jsonc'), '{\n  "$schema": "https://opencode.ai/config.json"\n}\n');
@@ -64,7 +64,7 @@ describe('Installer targets — partial-state idempotency', () => {
 
   it('opencode: uses .json when only .json exists (no .jsonc)', () => {
     const opencode = getTarget('opencode')!;
-    const dir = path.join(tmpHome, '.config', 'opencode');
+    const dir = opencodeTestDir(tmpHome);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'opencode.json'), '{\n  "$schema": "https://opencode.ai/config.json"\n}\n');
 
@@ -82,7 +82,7 @@ describe('Installer targets — partial-state idempotency', () => {
 
   it('opencode: preserves line and block comments through install + idempotent re-run', () => {
     const opencode = getTarget('opencode')!;
-    const dir = path.join(tmpHome, '.config', 'opencode');
+    const dir = opencodeTestDir(tmpHome);
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, 'opencode.jsonc');
     const original = [

@@ -12,6 +12,12 @@ export function mkTmpDir(label: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), `cg-targets-${label}-`));
 }
 
+export function opencodeTestDir(home: string): string {
+  return process.platform === 'win32'
+    ? path.join(home, 'AppData', 'Roaming', 'opencode')
+    : path.join(home, '.config', 'opencode');
+}
+
 // `os.homedir` is non-configurable on Node, so we redirect it via the
 // `$HOME` (POSIX) / `$USERPROFILE` (Windows) env vars that
 // `os.homedir()` reads first. Same trick the rest of the suite uses
