@@ -26,7 +26,7 @@ const MDC_PATH = path.join(__dirname, '..', '.cursor', 'rules', 'codegraph.mdc')
 
 /** Extract the marker-delimited body from the .mdc (everything after frontmatter). */
 function mdcBody(): string {
-  const raw = fs.readFileSync(MDC_PATH, 'utf-8');
+  const raw = fs.readFileSync(MDC_PATH, 'utf-8').replace(/\r\n/g, '\n');
   const m = raw.match(/^---\n[\s\S]*?\n---\n([\s\S]*)$/);
   return m ? m[1] : raw;
 }

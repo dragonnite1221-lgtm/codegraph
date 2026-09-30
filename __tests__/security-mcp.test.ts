@@ -21,6 +21,7 @@ import { shouldIncludeFile as configShouldInclude } from '../src/config';
 import { CodeGraphConfig, DEFAULT_CONFIG } from '../src/types';
 import { DatabaseConnection, getDatabasePath } from '../src/db';
 import { QueryBuilder } from '../src/db/queries';
+import { createTestSymlink } from './symlink-test-helper';
 
 function createTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-security-test-'));
@@ -100,7 +101,7 @@ describe('MCP Input Validation', () => {
     expect(result.content[0].text).toContain('non-empty string');
   });
 
-  it('should not follow pre-existing session marker symlinks', async () => {
+  it('should not follow pre-existing session marker symlinks', async (context) => {
     const previousSessionId = process.env.CLAUDE_SESSION_ID;
     const sessionId = `codegraph-security-${process.pid}-${Date.now()}`;
     const markerHash = createHash('md5').update(sessionId).digest('hex').slice(0, 16);
@@ -113,7 +114,7 @@ describe('MCP Input Validation', () => {
       if (fs.existsSync(markerPath)) {
         fs.rmSync(markerPath, { force: true });
       }
-      fs.symlinkSync(protectedPath, markerPath);
+      createTestSymlink(protectedPath, markerPath, context.skip);
       process.env.CLAUDE_SESSION_ID = sessionId;
 
       const result = await handler.execute('codegraph_context', { task: 'example' });

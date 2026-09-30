@@ -16,15 +16,19 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { CodeGraph } from '../src';
+import { once } from 'events';
 
 const BIN = path.resolve(__dirname, '../dist/bin/codegraph.js');
+const serverClosed = new WeakMap<ChildProcessWithoutNullStreams, Promise<unknown>>();
 
 function spawnServer(cwd: string): ChildProcessWithoutNullStreams {
-  return spawn(process.execPath, [BIN, 'serve', '--mcp'], {
+  const server = spawn(process.execPath, [BIN, 'serve', '--mcp'], {
     cwd,
     env: { ...process.env, CODEGRAPH_ALLOW_UNSAFE_NODE: '1' },
     stdio: ['pipe', 'pipe', 'pipe'],
   }) as ChildProcessWithoutNullStreams;
+  serverClosed.set(server, once(server, 'close'));
+  return server;
 }
 
 function sendInitialize(child: ChildProcessWithoutNullStreams, projectPath: string) {
@@ -100,9 +104,12 @@ describe('MCP initialize handshake (issue #172)', () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-mcp-init-'));
   });
 
-  afterEach(() => {
-    if (child && !child.killed) {
-      child.kill('SIGKILL');
+  afterEach(async () => {
+    if (child) {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGKILL');
+      }
+      await serverClosed.get(child);
       child = null;
     }
     fs.rmSync(tempDir, { recursive: true, force: true });

@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { ALL_TARGETS, getTarget, resolveTargetFlag } from '../src/installer/targets/registry';
 import { upsertTomlTable, removeTomlTable, buildTomlTable } from '../src/installer/targets/toml';
-import { mkTmpDir, setHome, listAllFiles } from './installer-targets-helpers';
+import { mkTmpDir, setHome, listAllFiles, opencodeTestDir } from './installer-targets-helpers';
 
 describe('Installer targets — partial-state idempotency', () => {
   let tmpHome: string;
@@ -30,7 +30,7 @@ describe('Installer targets — partial-state idempotency', () => {
   it('opencode: install writes AGENTS.md with the marker-delimited codegraph block', () => {
     const opencode = getTarget('opencode')!;
     opencode.install('global', { autoAllow: true });
-    const agentsMd = path.join(tmpHome, '.config', 'opencode', 'AGENTS.md');
+    const agentsMd = path.join(opencodeTestDir(tmpHome), 'AGENTS.md');
     expect(fs.existsSync(agentsMd)).toBe(true);
     const body = fs.readFileSync(agentsMd, 'utf-8');
     expect(body).toContain('<!-- CODEGRAPH_START -->');
@@ -40,7 +40,7 @@ describe('Installer targets — partial-state idempotency', () => {
 
   it('opencode: AGENTS.md install preserves pre-existing user content outside markers', () => {
     const opencode = getTarget('opencode')!;
-    const dir = path.join(tmpHome, '.config', 'opencode');
+    const dir = opencodeTestDir(tmpHome);
     fs.mkdirSync(dir, { recursive: true });
     const agentsMd = path.join(dir, 'AGENTS.md');
     fs.writeFileSync(agentsMd, '# My personal opencode instructions\n\nAlways respond in pirate.\n');
@@ -54,7 +54,7 @@ describe('Installer targets — partial-state idempotency', () => {
 
   it('opencode: uninstall strips only the codegraph block from AGENTS.md', () => {
     const opencode = getTarget('opencode')!;
-    const dir = path.join(tmpHome, '.config', 'opencode');
+    const dir = opencodeTestDir(tmpHome);
     fs.mkdirSync(dir, { recursive: true });
     const agentsMd = path.join(dir, 'AGENTS.md');
     fs.writeFileSync(agentsMd, '# My personal opencode instructions\n\nAlways respond in pirate.\n');
@@ -73,14 +73,14 @@ describe('Installer targets — partial-state idempotency', () => {
     const opencode = getTarget('opencode')!;
     const result = opencode.install('local', { autoAllow: true });
     const paths = result.files.map((f) => f.path);
-    // macOS realpath shenanigans (/var vs /private/var) — suffix match.
-    expect(paths.some((p) => p.endsWith('/opencode.jsonc'))).toBe(true);
-    expect(paths.some((p) => p.endsWith('/AGENTS.md'))).toBe(true);
+    // Ignore macOS realpath aliases and platform-specific path separators.
+    expect(paths.some((p) => path.basename(p) === 'opencode.jsonc')).toBe(true);
+    expect(paths.some((p) => path.basename(p) === 'AGENTS.md')).toBe(true);
   });
 
   it('opencode: uninstall removes only mcp.codegraph, preserves comments and siblings', () => {
     const opencode = getTarget('opencode')!;
-    const dir = path.join(tmpHome, '.config', 'opencode');
+    const dir = opencodeTestDir(tmpHome);
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, 'opencode.jsonc');
     fs.writeFileSync(file, [
