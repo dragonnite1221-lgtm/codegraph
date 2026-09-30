@@ -158,15 +158,14 @@ export async function resolveAndPersistBatched(
 
     const result = resolveAll(resolver, batch);
 
-    // Persist edges immediately
+    // Persist edges and prune only the rows fetched for this batch atomically.
     const edges = buildResolvedEdges(resolver.queries, result.resolved);
-    if (edges.length > 0) {
-      resolver.queries.insertEdges(edges);
-    }
-
-    // Clean up resolved + unresolvable refs so they don't appear in the next batch
-    deleteRefs(resolver.queries, result.resolved.map((r) => r.original));
-    deleteRefs(resolver.queries, result.unresolved);
+    resolver.queries.transaction(() => {
+      if (edges.length > 0) {
+        resolver.queries.insertEdges(edges);
+      }
+      resolver.queries.deleteUnresolvedReferencesByIds(batchIds);
+    });
 
     // Aggregate stats
     aggregateStats.total += result.stats.total;
