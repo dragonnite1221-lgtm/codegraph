@@ -1,0 +1,9 @@
+{
+  "provider": "antigravity",
+  "mechanism": "manual-local-cli",
+  "active_family": "gemini-flash",
+  "selection": "latest-available-from-live-catalog",
+  "future_family": "claude-sonnet",
+  "future_requires": "verified read-only quota recovery; never a paid test invocation",
+  "version_pin": null
+}
