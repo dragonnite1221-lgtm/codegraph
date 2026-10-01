@@ -44,7 +44,8 @@ export function registerFilesCommand(program: Command, deps: CommandDeps): void 
         let files = cg.getFiles();
 
         if (files.length === 0) {
-          info('No files indexed. Run "codegraph index" first.');
+          if (options.json) console.log('[]');
+          else info('No files indexed. Run "codegraph index" first.');
           cg.destroy();
           return;
         }
@@ -60,7 +61,8 @@ export function registerFilesCommand(program: Command, deps: CommandDeps): void 
         }
 
         if (files.length === 0) {
-          info('No files found matching the criteria.');
+          if (options.json) console.log('[]');
+          else info('No files found matching the criteria.');
           cg.destroy();
           return;
         }
