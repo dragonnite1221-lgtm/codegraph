@@ -15,8 +15,10 @@ export function extractVueRoutes(filePath: string): FrameworkExtractionResult {
 
     // Detect Nuxt page routes (pages/ directory)
     const pagesIndex = normalized.indexOf('/pages/');
-    if (pagesIndex !== -1 && normalized.endsWith('.vue')) {
-      const routePath = filePathToNuxtRoute(normalized, pagesIndex + '/pages/'.length);
+    const pagesStart = normalized.startsWith('pages/') ? 'pages/'.length
+      : pagesIndex === -1 ? -1 : pagesIndex + '/pages/'.length;
+    if (pagesStart !== -1 && normalized.endsWith('.vue')) {
+      const routePath = filePathToNuxtRoute(normalized, pagesStart);
       if (routePath !== null) {
         nodes.push({
           id: `route:${filePath}:${routePath}:1`,
