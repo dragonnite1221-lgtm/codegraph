@@ -41,14 +41,30 @@ if [ -z "${NOTES}" ]; then
   exit 1
 fi
 
-if git rev-parse "${TAG}" >/dev/null 2>&1; then
+EXPECTED_COMMIT=$(git rev-parse HEAD)
+LOCAL_COMMIT=$(git rev-parse -q --verify "refs/tags/${TAG}^{commit}" 2>/dev/null || true)
+REMOTE_REFS=$(git ls-remote --tags origin "refs/tags/${TAG}" "refs/tags/${TAG}^{}")
+REMOTE_COMMIT=$(printf '%s\n' "$REMOTE_REFS" | awk -v ref="refs/tags/${TAG}" '$2 == ref { print $1; exit }')
+PEELED_COMMIT=$(printf '%s\n' "$REMOTE_REFS" | awk -v ref="refs/tags/${TAG}^{}" '$2 == ref { print $1; exit }')
+if [ -n "$PEELED_COMMIT" ]; then REMOTE_COMMIT="$PEELED_COMMIT"; fi
+
+if [ -n "$LOCAL_COMMIT" ] && [ "$LOCAL_COMMIT" != "$EXPECTED_COMMIT" ]; then
+  echo "error: local tag ${TAG} points to a different commit" >&2
+  exit 1
+fi
+if [ -n "$REMOTE_COMMIT" ] && [ "$REMOTE_COMMIT" != "$EXPECTED_COMMIT" ]; then
+  echo "error: origin tag ${TAG} points to a different commit" >&2
+  exit 1
+fi
+
+if [ -n "$LOCAL_COMMIT" ]; then
   echo "✓ tag ${TAG} already exists locally"
 else
   echo "→ tagging ${TAG}"
   git tag "${TAG}"
 fi
 
-if git ls-remote --exit-code --tags origin "${TAG}" >/dev/null 2>&1; then
+if [ -n "$REMOTE_COMMIT" ]; then
   echo "✓ tag ${TAG} already on origin"
 else
   echo "→ pushing ${TAG} to origin"
