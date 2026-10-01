@@ -1,0 +1,2 @@
+scripts/agent-eval/run-agent.sh text eol=lf
+scripts/agent-eval/run-agent.test.sh text eol=lf
