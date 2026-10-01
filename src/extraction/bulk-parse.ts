@@ -151,12 +151,12 @@ export async function runBulkParseLoop(args: BulkParseArgs): Promise<{ aborted: 
           errors.push(...result.errors);
         }
 
-        if (result.nodes.length > 0) {
+        if (hasFatalExtractionError(result)) {
+          counters.filesErrored++;
+        } else if (result.nodes.length > 0) {
           counters.filesIndexed++;
           counters.totalNodes += result.nodes.length;
           counters.totalEdges += result.edges.length;
-        } else if (hasFatalExtractionError(result)) {
-          counters.filesErrored++;
         } else {
           counters.filesSkipped++;
         }

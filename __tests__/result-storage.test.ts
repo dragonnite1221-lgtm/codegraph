@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { storeExtractionResult } from '../src/extraction/result-storage';
+import { shouldStoreParseResult } from '../src/extraction/parse-result-predicates';
 import type { Edge, ExtractionResult, FileRecord, Node, UnresolvedReference } from '../src/types';
 
 function makeNode(id: string, overrides: Partial<Node> = {}): Node {
@@ -61,6 +62,64 @@ function makeQueries(existingFile: FileRecord | null = null) {
 }
 
 describe('extraction result storage', () => {
+  it('preserves the previous graph and hash after a fatal partial parse', () => {
+    const queries = makeQueries({
+      path: 'src/a.ts',
+      contentHash: 'previous-hash',
+      language: 'typescript',
+      size: 5,
+      modifiedAt: 1,
+      indexedAt: 1,
+      nodeCount: 1,
+    });
+    const result = makeResult({
+      nodes: [makeNode('partial')],
+      errors: [{ message: 'visitor failed', filePath: 'src/a.ts', severity: 'error', code: 'parse_error' }],
+    });
+
+    expect(shouldStoreParseResult(result)).toBe(false);
+    storeExtractionResult(
+      queries,
+      'src/a.ts',
+      'new content',
+      'typescript',
+      { size: 11, mtimeMs: 10 } as import('fs').Stats,
+      result
+    );
+
+    expect(queries.deleted).toEqual([]);
+    expect(queries.nodes).toEqual([]);
+    expect(queries.files).toEqual([]);
+  });
+
+  it('preserves the previous graph and hash after an empty warning-only parse', () => {
+    const queries = makeQueries({
+      path: 'src/a.ts',
+      contentHash: 'previous-hash',
+      language: 'typescript',
+      size: 5,
+      modifiedAt: 1,
+      indexedAt: 1,
+      nodeCount: 1,
+    });
+    const result = makeResult({
+      errors: [{ message: 'optional framework extractor failed', severity: 'warning', code: 'parse_error' }],
+    });
+    expect(shouldStoreParseResult(result)).toBe(false);
+    storeExtractionResult(
+      queries,
+      'src/a.ts',
+      'new content',
+      'typescript',
+      { size: 11, mtimeMs: 10 } as import('fs').Stats,
+      result
+    );
+
+    expect(queries.deleted).toEqual([]);
+    expect(queries.nodes).toEqual([]);
+    expect(queries.files).toEqual([]);
+  });
+
   it('skips unchanged files by content hash', () => {
     const queries = makeQueries({
       path: 'src/a.ts',

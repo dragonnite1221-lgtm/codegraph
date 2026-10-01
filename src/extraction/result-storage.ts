@@ -2,6 +2,7 @@ import type * as fs from 'fs';
 
 import type { Edge, ExtractionResult, FileRecord, Language } from '../types';
 import { hashContent } from './file-scanner';
+import { shouldStoreParseResult } from './parse-result-predicates';
 import {
   findPreservableIncomingEdges,
   indexByUniqueStableKey,
@@ -30,6 +31,8 @@ export function storeExtractionResult(
   stats: fs.Stats,
   result: ExtractionResult
 ): void {
+  if (!shouldStoreParseResult(result)) return;
+
   const contentHash = hashContent(content);
 
   const existingFile = queries.getFileByPath(filePath);

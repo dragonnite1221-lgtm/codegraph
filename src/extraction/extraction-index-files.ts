@@ -9,6 +9,7 @@ import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import { ExtractionError, ExtractionResult } from '../types';
 import { extractFromSource } from './extract-from-source';
+import { hasFatalExtractionError, shouldStoreParseResult } from './parse-result-predicates';
 import { detectLanguage, isLanguageSupported } from './grammars';
 import { logWarn } from '../errors';
 import { validatePathWithinRoot } from '../utils';
@@ -31,12 +32,12 @@ export async function indexFiles(orch: OrchestratorApi, filePaths: string[]): Pr
       errors.push(...result.errors);
     }
 
-    if (result.nodes.length > 0) {
+    if (hasFatalExtractionError(result)) {
+      filesErrored++;
+    } else if (result.nodes.length > 0) {
       filesIndexed++;
       totalNodes += result.nodes.length;
       totalEdges += result.edges.length;
-    } else if (result.errors.some((e) => e.severity === 'error')) {
-      filesErrored++;
     } else {
       filesSkipped++;
     }
@@ -151,7 +152,7 @@ export async function indexFileWithContent(
   const result = extractFromSource(relativePath, content, language, frameworkNames);
 
   // Store in database
-  if (result.nodes.length > 0 || result.errors.length === 0) {
+  if (shouldStoreParseResult(result)) {
     orch.storeExtractionResult(relativePath, content, language, stats, result);
   }
 
