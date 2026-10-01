@@ -9,7 +9,7 @@ import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import { ExtractionError, ExtractionResult } from '../types';
 import { extractFromSource } from './extract-from-source';
-import { detectLanguage, isLanguageSupported } from './grammars';
+import { detectLanguage, isLanguageSupported, isGrammarLoaded, loadGrammarsForLanguages } from './grammars';
 import { logWarn } from '../errors';
 import { validatePathWithinRoot } from '../utils';
 import type { IndexResult, OrchestratorApi } from './index';
@@ -142,6 +142,9 @@ export async function indexFileWithContent(
   const language = detectLanguage(relativePath, content);
   if (!isLanguageSupported(language)) {
     return { nodes: [], edges: [], unresolvedReferences: [], errors: [], durationMs: 0 };
+  }
+  if (!isGrammarLoaded(language)) {
+    await loadGrammarsForLanguages([language]);
   }
 
   // Extract from source. Use cached framework names if indexAll has run,
