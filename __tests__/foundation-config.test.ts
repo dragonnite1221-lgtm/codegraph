@@ -33,6 +33,21 @@ describe('CodeGraph Foundation', () => {
   });
 
   describe('Configuration', () => {
+    it('does not follow a pre-existing config temporary symlink', () => {
+      const configDir = path.join(tempDir, '.codegraph');
+      fs.mkdirSync(configDir);
+      const outside = path.join(tempDir, 'outside.txt');
+      fs.writeFileSync(outside, 'keep');
+      const oldTemp = path.join(configDir, 'config.json.tmp');
+      fs.symlinkSync(outside, oldTemp);
+
+      saveConfig(tempDir, { ...DEFAULT_CONFIG, rootDir: tempDir });
+
+      expect(fs.readFileSync(outside, 'utf-8')).toBe('keep');
+      expect(fs.lstatSync(oldTemp).isSymbolicLink()).toBe(true);
+      expect(fs.existsSync(path.join(configDir, 'config.json'))).toBe(true);
+    });
+
     it('should load and merge config with defaults', () => {
       const cg = CodeGraph.initSync(tempDir);
       cg.close();
