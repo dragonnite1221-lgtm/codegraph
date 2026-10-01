@@ -21,6 +21,15 @@ import {
   INSTRUCTIONS_TEMPLATE,
 } from '../instructions-template';
 
+export function assertLocalCursorPaths(): void {
+  for (const relative of ['.cursor', '.cursor/mcp.json', '.cursor/rules', '.cursor/rules/codegraph.mdc']) {
+    const candidate = path.join(process.cwd(), relative);
+    if (fs.lstatSync(candidate, { throwIfNoEntry: false })?.isSymbolicLink()) {
+      throw new Error(`Refusing project-local Cursor path through a symbolic link: ${candidate}`);
+    }
+  }
+}
+
 export function mcpJsonPath(loc: Location): string {
   return loc === 'global'
     ? path.join(os.homedir(), '.cursor', 'mcp.json')
@@ -64,6 +73,7 @@ export function buildCursorMcpConfig(loc: Location): { type: string; command: st
 }
 
 export function writeMcpEntry(loc: Location): WriteResult['files'][number] {
+  if (loc === 'local') assertLocalCursorPaths();
   const file = mcpJsonPath(loc);
   const existing = readJsonFileForUpdate(file);
   const before = existing.mcpServers?.codegraph;
@@ -75,11 +85,13 @@ export function writeMcpEntry(loc: Location): WriteResult['files'][number] {
   const action: 'created' | 'updated' = before ? 'updated' : (fs.existsSync(file) ? 'updated' : 'created');
   if (!existing.mcpServers) existing.mcpServers = {};
   existing.mcpServers.codegraph = after;
+  if (loc === 'local') assertLocalCursorPaths();
   writeJsonFile(file, existing);
   return { path: file, action };
 }
 
 export function writeRulesEntry(): WriteResult['files'][number] {
+  assertLocalCursorPaths();
   const file = rulesPath();
   const dir = path.dirname(file);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -90,6 +102,7 @@ export function writeRulesEntry(): WriteResult['files'][number] {
   const body = MDC_FRONTMATTER + INSTRUCTIONS_TEMPLATE;
 
   if (!fs.existsSync(file)) {
+    assertLocalCursorPaths();
     atomicWriteFileSync(file, body + '\n');
     return { path: file, action: 'created' };
   }
@@ -103,6 +116,7 @@ export function writeRulesEntry(): WriteResult['files'][number] {
 
   // Otherwise, marker-based section swap (preserves any user-added
   // content outside the markers).
+  assertLocalCursorPaths();
   const action = replaceOrAppendMarkedSection(
     file,
     INSTRUCTIONS_TEMPLATE,
