@@ -1,0 +1,2 @@
+scripts/agent-eval/itrun.sh text eol=lf
+scripts/agent-eval/itrun.test.sh text eol=lf
