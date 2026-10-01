@@ -45,7 +45,7 @@ describe('runIndexFiles file lock lifetime', () => {
         indexFiles: () => indexingInFlight,
       } as unknown as ExtractionOrchestrator,
       queries: {} as IndexingDeps['queries'],
-      resolver: {} as IndexingDeps['resolver'],
+    resolver: { initialize: () => {} } as unknown as IndexingDeps['resolver'],
     };
 
     const runPromise = runIndexFiles(deps, ['a.ts']);
